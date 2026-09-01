@@ -23,24 +23,41 @@ Source's macro-heavy design bakes names into the shipping binary. Measured in
 
 | Surface | Count | What it gives us |
 |---|---|---|
-| `typedescription_t` field entries | **2,743** | field **name + type + byte offset** |
-| `datamap_t` tables recovered w/ class name | **253** | C++ **class name** to its field table |
-| `m_*` member-name strings | 3,697 | upper bound on recoverable members |
-| `C*` / `C_*` class-name strings | 1,185 | class inventory (client + server) |
+| **MSVC RTTI classes** (`TypeDescriptor`) | **2,336** | every polymorphic **class name** |
+| **vtables** (COL at `vtable[-1]`) | **2,932** | **12,288 unique virtual method addresses** |
+| RTTI inheritance chains | 2,082 | exact base-class graph, templates included |
+| `typedescription_t` field entries | 2,743 | field **name + type + byte offset** |
+| `datamap_t` tables recovered w/ class name | 253 | C++ **class name** to its field table |
 | `DT_*` network table names | 192 | SendTable/RecvTable to networked members |
 | entity classnames + ConVars | 613 | `LINK_ENTITY_TO_CLASS` / `ConVar` to globals |
 
-`tools/datamaps.py` already turns the first two rows into real struct layouts —
-class name, member name, `fieldtype_t`, and byte offset. See
-[docs/symbols.md](docs/symbols.md).
+Two tools mine this today, both with self-checks:
+
+- **`tools/rtti.py`** — RTTI is left on in this build, so 2,932 vtables and
+  12,288 virtual methods come out with class names and a complete inheritance
+  graph. 8,992 of those methods appear in exactly one class's vtable and are
+  uniquely attributable.
+- **`tools/datamaps.py`** — real struct layouts: class name, member name,
+  `fieldtype_t`, byte offset.
+
+RTTI also **feeds back into disassembly**: a vtable entry proves a function
+entry point, and 7,992 of the 12,288 landed in bytes the linear sweep never
+claimed. Seeding them took the function count **33,140 to 41,215 (+24%)**.
+
+See [docs/symbols.md](docs/symbols.md) for the structures and the numbers.
 
 ### 2. The source code is public
 
 Valve ships [`ValveSoftware/source-sdk-2013`](https://github.com/ValveSoftware/source-sdk-2013)
 publicly, covering `src/game/{client,server}`, `src/public`, `src/tier1`,
-`src/mathlib`, `src/vgui2`. The Xbox port is a branch of **Source 2004**, so
-2013 is close-but-not-equal — near-identical for `tier1`/`mathlib`, drifted for
-game code. The XBE's own build paths confirm the tree layout matches:
+`src/mathlib`, `src/vgui2`. **1,201 of the 1,435 non-template class names in the
+XBE (84%) are declared in that SDK**, with an exact file to read. The 234 misses
+are almost all engine internals the SDK omits (`CBaseClient`, `CBaseServer`,
+`CAudioSourceWave`, `CBrushBSPIterator`).
+
+The Xbox port is a branch of **Source 2004**, so 2013 is close-but-not-equal —
+near-identical for `tier1`/`mathlib`, drifted for game code. The XBE's own build
+paths confirm the tree layout matches:
 
 ```
 U:\xbox\main\src\launcher\Retail_XBox\launcher.exe     <- XBE debug path
@@ -114,17 +131,20 @@ inlined into game code with non-standard calling conventions rather than clean
 **`LIBCPMT`** (C++ multithreaded CRT) means real C++: exceptions, RTTI, `std::`
 containers, vtables everywhere. The other targets are mostly C.
 
-### Disassembly (first pass, `tools.disasm`)
+### Disassembly (`tools.disasm`, seeded with RTTI)
 ```
-total_instructions   2,047,949
-total_functions         33,140      (.text 32,302)
-  by prologue            8,008
-  by call target        17,498
-  by cc boundary         7,454
+total_instructions   2,047,989
+total_functions         41,215      (.text 40,377)
+  seed_vtable_thunk     12,288      <- from tools/rtti.py
+  by call target        16,972
+  by cc boundary         6,125
+  by prologue            5,581
+reachable instructions   87.4%
 total_xrefs            455,167
 kernel imports             124
 ```
-33k functions is roughly 4x Halo. Expect the recomp step to be the long pole.
+Without the RTTI seeds this pass finds 33,140. 41k functions is roughly 5x Halo;
+expect the recomp step to be the long pole.
 
 ### Kernel Imports (124)
 Nothing exotic — Av/Ex/Hal/Io/Ke/Mm/Nt/Ps/Rtl/Xc/Xe, the normal set. There is no
@@ -161,7 +181,7 @@ Based on [xboxrecomp](https://github.com/sp00nznet/xboxrecomp).
 
 ### Key Directories
 - `game/` — extracted disc contents (git-ignored) and `hl2_analysis.json`
-- `tools/` — HL2-specific analysis (`datamaps.py`)
+- `tools/` — HL2-specific analysis (`rtti.py`, `datamaps.py`)
 - `build/` — pipeline output and CMake build tree (git-ignored)
 - `ref/` — reference source checkouts, clone yourself (git-ignored)
 - `src/game/recomp/gen/` — auto-generated C (git-ignored, rebuild via `regen.sh`)
@@ -169,8 +189,9 @@ Based on [xboxrecomp](https://github.com/sp00nznet/xboxrecomp).
 
 ### Regenerating
 ```bash
-./regen.sh --disasm     # full pipeline, ~30s disasm + recomp
+./regen.sh --disasm     # full pipeline: rtti -> seeded disasm -> recomp
 ./regen.sh              # skip disasm, re-run datamaps/func_id/recomp
+py -3 tools/rtti.py --self-check
 py -3 tools/datamaps.py --self-check
 ```
 
@@ -182,9 +203,10 @@ py -3 tools/datamaps.py --self-check
 ## Known Risks
 - **Size.** 6 MB `.text` / 33k functions / 2M instructions is 3-4x anything the
   toolkit has digested. Codegen time and MSVC compile time are both unknowns.
-- **C++.** `LIBCPMT` means vtables, RTTI and possibly EH frames. Indirect-call
-  resolution matters far more here than on the C targets; plan on the
-  `HL2_ICALL_FEEDBACK` loop early.
+- **C++.** `LIBCPMT` means vtables, RTTI and EH. Indirect-call resolution
+  matters far more here than on the C targets — though RTTI already resolves
+  176,865 vtable slots statically, which is most of the indirect-call surface.
+  Plan on the `HL2_ICALL_FEEDBACK` loop for the rest.
 - **D3D8LTCG.** Inlined D3D means the D3D translation layer cannot just hook
   clean interface methods. Burnout 3 hit this first; reuse that work.
 - **128 MB heap reserve on a 64 MB console.** Worth understanding before wiring

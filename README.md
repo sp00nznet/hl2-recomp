@@ -9,15 +9,18 @@ input).
 
 ## Why this target
 
-Every other Xbox recomp target is a stripped binary. HL2 is not:
+Every other Xbox recomp target is a stripped binary. HL2 is not — this build
+ships with MSVC RTTI left on and Source's name-baking macros intact:
 
-- **2,743** `typedescription_t` entries in the retail XBE, each with a member
-  **name, type and byte offset**
-- **253** `datamap_t` tables recovered *with their C++ class name*, so far
-- **1,185** class-name strings, **192** `DT_*` network tables, **613** entity
-  classnames and ConVars
-- Valve's build tree paths (`U:\xbox\main\src\tier1\mempool.cpp`) confirm the
-  layout matches the **publicly released** [Source SDK 2013](https://github.com/ValveSoftware/source-sdk-2013)
+- **2,336** RTTI classes and **2,932** vtables, giving **12,288 unique virtual
+  method addresses** with class names and an exact inheritance graph
+- **2,743** `typedescription_t` entries, each with a member **name, type and
+  byte offset**; 253 `datamap_t` tables recovered *with their C++ class name*
+- **1,201 of 1,435** class names (84%) are declared in the **publicly released**
+  [Source SDK 2013](https://github.com/ValveSoftware/source-sdk-2013), with an
+  exact file to read. The misses are engine internals the SDK omits.
+- Feeding RTTI back into the disassembler found **7,992 functions the linear
+  sweep missed** — 33,140 to **41,215** function starts (+24%)
 
 So a recovered function can often be traced: address to class name to the real
 `.cpp` in the public SDK. Details and caveats in [docs/symbols.md](docs/symbols.md).
@@ -29,8 +32,10 @@ Analysis phase. Nothing runs yet.
 | Step | State |
 |---|---|
 | XBE parsed | done — entry `0x0059C612`, 10 sections, 124 kernel imports |
-| Disassembled | done — 33,140 functions, 2,047,949 instructions |
+| RTTI recovery | done — `tools/rtti.py`, 2,336 classes / 2,932 vtables / 12,288 methods |
+| Disassembled | done — 41,215 functions, 2,047,989 instructions, 87.4% reachable |
 | Datamap recovery | done — `tools/datamaps.py`, 253 classes / 1,722 fields |
+| SDK cross-reference | done — 84% of classes located in Source SDK 2013 |
 | func_id / codegen | not started |
 | Runtime bring-up | not started |
 
@@ -49,6 +54,7 @@ git clone --depth 1 https://github.com/ValveSoftware/source-sdk-2013 ref/source-
 ./regen.sh --disasm
 
 # 4. sanity-check the symbol recovery
+py -3 tools/rtti.py --self-check
 py -3 tools/datamaps.py --self-check
 ```
 

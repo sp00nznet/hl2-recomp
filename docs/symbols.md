@@ -120,7 +120,125 @@ Counted but not yet turned into a tool:
   and the Havok/IVP physics code), far fewer than Halo's 298, because Source's
   release build compiles `Assert()` out. Not a major surface here.
 
+## MSVC RTTI: the biggest surface
+
+`LIBCPMT` is linked with RTTI left on, so the retail binary carries a complete
+MSVC RTTI graph. This is a much larger win than the datamaps, and it names
+*code* rather than data. `tools/rtti.py` walks it:
+
+```
+$ py -3 tools/rtti.py --self-check
+ok: 2336 classes, 2932 vtables, 176865 slots, 12288 unique methods
+```
+
+| Recovered | Count |
+|---|---|
+| `TypeDescriptor`s (class names, decorated) | 2,336 |
+| `CompleteObjectLocator`s | 2,932 |
+| vtables (one per COL; extra ones are multiple-inheritance subobjects) | 2,932 |
+| virtual method slots | 176,865 |
+| **unique function addresses reached** | **12,288** |
+| ...appearing in exactly one class's vtable (uniquely attributable) | 8,992 |
+| classes with a recovered inheritance chain | 2,082 |
+
+### How it hangs together
+
+MSVC emits, for each polymorphic class, a `CompleteObjectLocator` and places a
+pointer to it at **`vtable[-1]`** — the dword immediately before the first
+method. So finding vtables is: find the COLs, then find every word pointing at
+one, and the vtable starts 4 bytes later. Walk forward while entries are valid
+code VAs to get the method list.
+
+```
+TypeDescriptor            { void *vfptr; void *spare; char name[]; }
+CompleteObjectLocator     { u32 sig; u32 offset; u32 cdOffset;
+                            TypeDescriptor *pTD; ClassHierarchyDescriptor *pCD; }
+ClassHierarchyDescriptor  { u32 sig; u32 attributes; u32 numBaseClasses;
+                            BaseClassDescriptor **pBaseClassArray; }
+BaseClassDescriptor       { TypeDescriptor *pTD; u32 numContainedBases;
+                            PMD where; u32 attributes; }
+```
+
+All pointers are plain VAs — this is 32-bit MSVC, so there is none of the
+image-relative-offset indirection x64 RTTI uses.
+
+### The inheritance graph is exact
+
+`CNPC_Alyx`, straight out of the `ClassHierarchyDescriptor`:
+
+```
+CNPC_Alyx -> CNPC_PlayerCompanion -> CAI_PlayerAlly -> CAI_BaseActor
+  -> CAI_ExpresserHost<CAI_BaseHumanoid> -> CAI_BaseHumanoid
+  -> CAI_BlendingHost<CAI_BehaviorHost<CAI_BaseNPC>>
+  -> CAI_BehaviorHost<CAI_BaseNPC> -> CAI_BaseNPC -> CBaseCombatCharacter
+  -> CBaseFlex -> CBaseAnimatingOverlay -> CBaseAnimating -> CBaseEntity
+  -> IServerEntity -> IServerUnknown -> IHandleEntity
+  (+ secondary bases: CAI_DefMovementSink, IAI_MovementSink,
+     IBehaviorBackBridge, CAI_ExpresserSink)
+```
+
+That is textbook Source, template arguments and all, and it matches the SDK.
+`CNPC_Alyx`'s primary vtable is **533 slots**.
+
+**Per-slot "which ancestor declared this" is deliberately not inferred.** The
+base-class array is a depth-first preorder, so the trailing entries are
+secondary-inheritance branches, not the least-derived base — a naive
+"last entry owns slot 0" rule gives `CAI_ExpresserSink` instead of
+`IHandleEntity`. With multiple inheritance the question needs MSVC layout
+modelling to answer honestly. What the tool reports instead is how many classes'
+vtables a method appears in; **8,992** appear in exactly one and are therefore
+uniquely attributable with no inference at all.
+
+### Client and server in one binary
+
+The Xbox build statically links client and server together, and the compiler
+disambiguated the duplicate class names with a `Client_` prefix:
+`Client_CAmmoDef` vs `CAmmoDef`, `Client_CActivityDataOps`, and so on. Useful
+for free: it tells you which side of the engine a vtable belongs to.
+
+## Feeding RTTI back into the disassembler
+
+A vtable entry is *proof* of a function entry point. Comparing the 12,288
+recovered method addresses against the first disassembly pass:
+
+| | Count |
+|---|---|
+| already a detected function start | 4,286 |
+| **fell in unclaimed bytes (missed functions)** | **7,992** |
+| landed inside a detected function | 10 |
+
+The 10 are 16-byte-spaced adjustor thunks that the sweep had merged into one
+function. The other 7,992 were simply never found.
+
+`tools/rtti.py --seeds` writes them in `tools.disasm --seed-functions` format,
+and `regen.sh` runs RTTI *before* disasm for exactly this reason:
+
+```
+                    without seeds      with RTTI seeds
+total functions            33,140               41,215   (+24%)
+reachable instructions          --                87.4%
+```
+
+disasm also reported *"Realigned 19 seeded addresses the sweep stepped over"* —
+RTTI did not just add functions, it corrected decode boundaries the linear sweep
+had got wrong.
+
 ## Cross-referencing the public source
+
+Of the 1,435 non-template class names in the binary, **1,201 (84%) are declared
+in `ref/source-sdk-2013/src`**, with an exact file to read:
+
+```
+CAI_ActBusyBehavior        game\server\hl2i_behavior_actbusy.h
+CAI_AllyManager            game\server\hl2i_allymanager.cpp
+AR2Explosion               game\server\hl2r2_explosion.h
+Beam_t                     game\clienteamdraw.h
+```
+
+The 234 misses are almost entirely **engine** classes, exactly where the public
+SDK stops: `CBaseClient`, `CBaseServer`, `CAudioSourceWave`, `CAudioMixerWave`,
+`CBrushBSPIterator`, `CChangeFrameList`. Game code is public; engine, sound and
+BSP internals are not.
 
 Once a function is attributed to a class, `ref/source-sdk-2013` usually has the
 matching `.cpp`. Reliability by area:
