@@ -339,6 +339,25 @@ it. Once it is an XZP, GCFScape 1.4.1, HLLib and
 [`desukuran/lynx-project`](https://github.com/desukuran/lynx-project) all read
 the format.
 
+**The game cannot do that unwrapping itself.** `pmCx` and the constant
+`0x78436D70` appear exactly once in `default.xbe` and *zero* times in
+`hl2_xbox.xbe`. So xCompress lives entirely in the loader: it decompresses
+during the HDD copy, and the game only ever opens a plain XZP. That settles a
+question the file names leave open -- `.xz_` to `.xzp` is a real format change,
+not a rename -- and it means the unwrapping is an offline, one-time step rather
+than a runtime path to shim.
+
+Two ways to get it, and the second is more interesting than it sounds:
+
+1. Write the LZX decoder. It is a Microsoft container, so it belongs upstream
+   in the toolkit rather than here.
+2. **Recompile `default.xbe`.** It is 467 KB against the game's 8.4 MB, it has
+   no renderer to speak of, and its whole job is this copy. Running the port
+   house's own installer to produce its own asset files is a smaller problem
+   than reimplementing its decompressor, and it validates the toolkit on a
+   second target from the same disc.
+
+
 Two options, and the second is probably right:
 
 1. decompress offline, ship the `.xzp` in a `Z:` directory the path layer maps;
