@@ -20,7 +20,7 @@ ships with MSVC RTTI left on and Source's name-baking macros intact:
   [Source SDK 2013](https://github.com/ValveSoftware/source-sdk-2013), with an
   exact file to read. The misses are engine internals the SDK omits.
 - Feeding RTTI back into the disassembler found **7,992 functions the linear
-  sweep missed** — 33,140 to **41,215** function starts (+24%)
+  sweep missed** — 33,140 to **41,223** function starts (+24%)
 
 So a recovered function can often be traced: address to class name to the real
 `.cpp` in the public SDK. Details and caveats in [docs/symbols.md](docs/symbols.md).
@@ -33,7 +33,7 @@ Analysis phase. Nothing runs yet.
 |---|---|
 | XBE parsed | done — entry `0x0059C612`, 10 sections, 124 kernel imports |
 | RTTI recovery | done — `tools/rtti.py`, 2,336 classes / 2,932 vtables / 12,288 methods |
-| Disassembled | done — 41,215 functions, 2,047,989 instructions, 87.4% reachable |
+| Disassembled | done — 41,223 functions, 2,044,960 instructions, 87.4% reachable |
 | Datamap recovery | done — `tools/datamaps.py`, 253 classes / 1,722 fields |
 | SDK cross-reference | done — 84% of classes located in Source SDK 2013 |
 | func_id / codegen | not started |

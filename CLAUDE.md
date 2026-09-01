@@ -42,7 +42,7 @@ Two tools mine this today, both with self-checks:
 
 RTTI also **feeds back into disassembly**: a vtable entry proves a function
 entry point, and 7,992 of the 12,288 landed in bytes the linear sweep never
-claimed. Seeding them took the function count **33,140 to 41,215 (+24%)**.
+claimed. Seeding them took the function count **33,140 to 41,223 (+24%)**.
 
 See [docs/symbols.md](docs/symbols.md) for the structures and the numbers.
 
@@ -133,14 +133,14 @@ containers, vtables everywhere. The other targets are mostly C.
 
 ### Disassembly (`tools.disasm`, seeded with RTTI)
 ```
-total_instructions   2,047,989
-total_functions         41,215      (.text 40,377)
-  seed_vtable_thunk     12,288      <- from tools/rtti.py
-  by call target        16,972
+total_instructions   2,044,960
+total_functions         41,223      (.text 40,383)
+  seed_vtable_thunk     12,293      <- from tools/rtti.py
+  by call target        16,959
   by cc boundary         6,125
-  by prologue            5,581
+  by prologue            5,596
 reachable instructions   87.4%
-total_xrefs            455,167
+total_xrefs            455,004
 kernel imports             124
 ```
 Without the RTTI seeds this pass finds 33,140. 41k functions is roughly 5x Halo;
