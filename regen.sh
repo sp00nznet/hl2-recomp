@@ -60,6 +60,15 @@ if [[ "${1:-}" == "--disasm" ]]; then
         | tr '\r' '\n' | grep -E "Realigned|Total functions|Reachable|Seeded")
 fi
 
+# Everything below reads what the --disasm block produces. On a clean checkout
+# none of it exists yet -- build/ is gitignored precisely because it is all
+# regenerable -- so say that rather than failing four steps later on a path.
+if [[ ! -f "$HL2/build/disasm/functions.json" ]]; then
+    echo "missing $HL2/build/disasm/functions.json"
+    echo "run ./regen.sh --disasm first: nothing under build/ is committed."
+    exit 1
+fi
+
 echo "==> func_id"
 (cd "$RECOMP" && py -3 -m tools.func_id "$XBE" \
     --functions "$HL2/build/disasm/functions.json" \
