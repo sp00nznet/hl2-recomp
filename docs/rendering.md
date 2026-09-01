@@ -169,6 +169,64 @@ point, so the next step is `tools.recomp --trace-functions` over the chain
 between three unrelated fixes: a lifting bug in a CRT function, an engine-level
 early-out on state we have not set up, or a call-lowering problem.
 
+## Where it stops today: the filesystem interface lookup
+
+The engine runs. `sub_005C0EA0` is the launcher's `WinMain` -- it names itself,
+via the profiling string at `0x772BBC` -- and it hangs looking up its first
+interface. Backtrace, from the watchdog through `tools/stackwalk.py`:
+
+```
+sub_005C0EA0+0x6A     engine WinMain
+  sub_005A1610+0xA6
+    sub_005A10C0+0x4C   CreateInterface("VFileSystem017")
+      sub_005A1700       module-table dispatch
+        sub_00011070+0x9
+          sub_000111E0   CUtlLinkedList walk
+```
+
+`sub_005A1700` indexes a 12-byte-stride module table and calls the factory in
+it:
+
+```
+mov edx, [eax+ecx]      ; entry.module   -> 0
+je  ...
+mov eax, [eax+ecx+4]    ; entry.factory  -> 0
+call eax                ; calls 0
+```
+
+**Both fields are null**, so it calls address 0. RECOMP_ICALL rejects that as
+not-code and returns `eax = 0`, and the caller then spins on the null result.
+
+Three measurements pin this down, and each was needed:
+
+| Question | Tool | Answer |
+|---|---|---|
+| Hung, or just slow? | watchdog `icalls so far` | 461 at 15s **and** 45s -- a tight spin |
+| Does the null repeat? | `recomp_icall_not_code_log` frequency | exactly once |
+| Is the list corrupt? | watchdog `RECOMP_PEEK` | no: head is `0xFFFF`, init flag set |
+
+461 is also the call number the null was logged at, so the null call is the
+*last* thing that happens. Skipping it is what causes the hang, not repeating
+it -- a distinction that took both the frequency count and the running total to
+establish, and that a first reading of the evidence got backwards.
+
+So the remaining problem is not lifting and not the list: **no factory is
+registered for the filesystem interface**. In Source, `EXPOSE_INTERFACE` builds
+that registration from a static constructor, and static initialisation now runs.
+Finding which registration is missing, or which module load silently returned an
+empty slot, is the next step.
+
+Two strings worth knowing sit next to this code:
+
+- `0x772BC4` = `r:\hl2\hl2x` -- a dev-tree game path left in the retail build,
+  next to the `T:/hl2/hl2x/%s%s` runtime paths
+- `0x772BD0` = `g_pEngineAPI->SetStartupInfo` -- an assert string, so the
+  sequence is filesystem, then engine API, then `SetStartupInfo`
+
+Note `0x772BA4` is *not* a string despite sitting among them: it is a function
+pointer (`0x005C0AE0`) in a callback table, which is worth saying because
+reading it as text is an easy mistake to make twice.
+
 ## 4. Assets have to load — and HL2's are behind an extra wrapper
 
 Unlike the other titles, HL2's data is not readable off the disc as-is.
