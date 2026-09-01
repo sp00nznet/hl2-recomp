@@ -91,6 +91,7 @@ void sub_0059DE80(void);
 void sub_005ADC0B(void);
 void sub_000C6719(void);
 void sub_000C85E2(void);
+void sub_0031954D(void);
 void recomp_watch_guest_write(uint32_t guest_va);
 
 recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
@@ -115,7 +116,13 @@ recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
     if (xbox_va == 0x005AE3D0u) return sub_005AE3D0;   /* memmove */
     if (xbox_va == 0x0059DE80u) return sub_0059DE80;   /* _initterm */
     if (xbox_va == 0x005ADC0Bu) return sub_005ADC0B;   /* atexit */
+    /* Two CUtlRBTree template instantiations, byte-identical apart from
+     * which static invalid-node they use. Same signature, same layout
+     * (LessFunc +0, elements +4, root +0x10), so one native body serves
+     * both -- the native walk computes element addresses directly and
+     * treats 0xFFFF as the terminator, so it never needs the sentinel. */
     if (xbox_va == 0x000C6719u) return sub_000C6719;   /* RBTree FindParent */
+    if (xbox_va == 0x0031954Du) return sub_000C6719;   /* ... other instance */
     if (xbox_va == 0x000C85E2u) return sub_000C85E2;   /* RBTree LinkToParent */
 
     return (recomp_func_t)0;
@@ -644,4 +651,17 @@ void sub_000C85E2(void)
     }
 
     g_esp += 16;                         /* ret 12 */
+}
+
+/* The second CUtlRBTree instantiation's FindParent.
+ *
+ * Byte-identical to sub_000C6719 apart from which static invalid-node its
+ * Links() helper returns, and the native walk never needs that -- it computes
+ * element addresses directly and terminates on 0xFFFF. Direct callers bind to
+ * this symbol, so it has to exist rather than just being routed in
+ * recomp_lookup_manual.
+ */
+void sub_0031954D(void)
+{
+    sub_000C6719();
 }
