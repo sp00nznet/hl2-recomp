@@ -240,6 +240,43 @@ to its real 664, and 38 functions regained 8,168 bytes of body.
 or `edi` changed, so the next one of these is a build flag rather than six
 wrong theories and a hand-placed probe.
 
+### What actually unblocked it: surviving a bad constructor
+
+The register clobber was real but it was not the binding constraint. The loop
+stopped because one constructor *faulted*, and a fault ended static
+initialisation outright -- so every constructor after it, including whichever
+registers the filesystem interface, simply never ran.
+
+Wrapping each constructor call in `__try` changed the picture completely:
+
+| | indirect calls | outcome |
+|---|---|---|
+| lifted `_initterm` | 461 | stops at ctor #56 |
+| native walk, restoring esi/edi/ebx | 461 -> ctor #296 | faults in ctor #296 |
+| native walk + `__try` | **104,025** | runs on |
+
+Of the hundreds of constructors that now run, **three** clobber callee-saved
+state and **one** faults. That is a handful of badly lifted functions, not a
+systematic failure -- which is the single most useful thing the survey
+established, because it says this is worth fixing one at a time.
+
+Worth recording what did *not* work, since both cost a full build:
+
+- `-DRECOMP_ABI_CHECK` reported zero violations. It hooks the `ICALL` macros,
+  so it sees indirect calls only, and CRT and static-init paths are almost
+  entirely direct C calls to symbols with no macro to hook. Right tool for
+  vtable-heavy code, wrong one for early boot.
+- The bogus heap handle reaching `RtlAllocateHeap` was a symptom, not a cause:
+  `free()` was running on a pointer from an already-broken constructor.
+  Continuing past that constructor made it moot.
+
+The run now stops on two indirect-call targets with no generated body,
+`0x0001D0F8` and `0x000618C1`. Both sit in gaps between detected functions and
+both decode as complete routines -- a 21-byte comparator and a thiscall
+constructor returning `this` -- so they are entry points the static pass
+missed. They are in `config/seed_functions.json`, which exists for exactly
+this.
+
 So the remaining problem is not lifting and not the list: **no factory is
 registered for the filesystem interface**. In Source, `EXPOSE_INTERFACE` builds
 that registration from a static constructor, and static initialisation now runs.
