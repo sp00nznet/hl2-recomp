@@ -15,7 +15,7 @@ file(GLOB RECOMP_GEN_SOURCES
 # Game executable sources
 set(GAME_SOURCES
     main.c
-    recomp/recomp_stubs.c
+
     ${RECOMP_GEN_SOURCES}
 )
 
@@ -45,6 +45,12 @@ target_include_directories(hl2 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/recomp
     ${CMAKE_CURRENT_SOURCE_DIR}/recomp/gen
     ${CMAKE_SOURCE_DIR}/src
+    # recomp_types.h et al come from the toolkit template directory rather than
+    # a copy in this repo. Bloodwake and Burnout 3 each carry a copy that has
+    # since diverged from the template by hundreds of lines; Halo and Wreckless
+    # carry copies that are still byte-identical, which is the same latent
+    # problem. Including the source of truth means this repo cannot drift.
+    ${XBOXRECOMP_DIR}/templates/runtime
 )
 
 # Compiler options
