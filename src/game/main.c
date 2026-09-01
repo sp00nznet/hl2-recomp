@@ -89,6 +89,42 @@ static BOOL load_xbe(const char *path, void **out_data, size_t *out_size)
     return TRUE;
 }
 
+
+/* Report a host fault with the guest state that caused it.
+ *
+ * Recompiled code faults as ordinary native code, so without this a crash is
+ * just "Segmentation fault" with nothing to act on. The guest registers are
+ * globals, so they can be printed directly, and the faulting address minus
+ * g_xbox_mem_offset says which guest address was touched -- which is what
+ * distinguishes a null dereference from a wild pointer. */
+static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
+{
+    const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+
+    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    fprintf(stderr, "\n[FAULT] access violation at host %p\n",
+            er->ExceptionAddress);
+    if (er->NumberParameters >= 2) {
+        uintptr_t addr = (uintptr_t)er->ExceptionInformation[1];
+        fprintf(stderr, "  %s address host 0x%p",
+                er->ExceptionInformation[0] ? "write to" : "read from",
+                (void *)addr);
+        if (g_xbox_mem_offset &&
+            addr >= (uintptr_t)g_xbox_mem_offset &&
+            addr < (uintptr_t)g_xbox_mem_offset + 0x10000000u)
+            fprintf(stderr, "  = guest 0x%08X",
+                    (uint32_t)(addr - (uintptr_t)g_xbox_mem_offset));
+        fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "  guest regs: eax=%08X ecx=%08X edx=%08X ebx=%08X\n"
+                    "              esp=%08X esi=%08X edi=%08X\n",
+            g_eax, g_ecx, g_edx, g_ebx, g_esp, g_esi, g_edi);
+    fflush(stderr);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 int main(int argc, char **argv)
 {
     const char *path = argc > 1 ? argv[1] : HL2_XBE_DEFAULT;
@@ -98,6 +134,7 @@ int main(int argc, char **argv)
     g_xbe_path = path;
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+    AddVectoredExceptionHandler(1, veh_handler);
 
     printf("=== Half-Life 2 (Xbox) - Static Recompilation ===\n");
 
