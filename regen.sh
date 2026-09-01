@@ -91,6 +91,7 @@ echo "==> recomp"
     --disasm-dir  "$HL2/build/disasm" \
     --func-id-dir "$HL2/build/func_id" \
     --abi-dir     "$HL2/build/abi" \
+    --exclude-manual "$HL2/src/game/recomp/recomp_manual.c" \
     --gen-dir     "$HL2/src/game/recomp/gen" \
     -o "$HL2/build/recomp" | grep -aE "unresolved|functions \(|Complete")
 

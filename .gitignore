@@ -57,3 +57,9 @@ fb*.bmp
 # config/seed_functions.json is deliberately NOT here: a runtime discovery
 # cannot be re-derived without running the game.
 game/*.json
+f850.txt
+s.log
+s_all.log
+r.log
+game/UDATA/
+game/TDATA/

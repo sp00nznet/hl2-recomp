@@ -20,6 +20,10 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+
+#include "recomp_types.h"
 
 /* ── ICALL trace ring buffer ───────────────────────────────── */
 
@@ -121,4 +125,63 @@ void recomp_icall_fail_log(uint32_t va)
             fprintf(stderr, "    [%2d] 0x%08X\n", i, g_icall_trace[idx]);
     }
     fflush(stderr);
+}
+
+/* ---------------------------------------------------------------------------
+ * sub_005AD700 -- the CRT's memcpy, implemented natively.
+ *
+ * MSVC's memcpy embeds a jump table of unrolled tail-copy cases in the middle
+ * of the function. tools.disasm decodes that table as instructions, loses sync,
+ * and the lifted body ends in nonsense (MEM8(ebx + -1981510076), esp++). More
+ * damaging than the garbage itself: the real epilogue is never reached, so the
+ * "push edi; push esi" at entry is never undone and **every caller of memcpy
+ * gets esi and edi silently clobbered**.
+ *
+ * On Half-Life 2 that lands squarely on RtlCreateHeap:
+ *
+ *     0x0059F85C  xor esi, esi
+ *     ...         call memcpy          <- esi comes back 0x00F7FF48
+ *     0x0059F8AB  cmp ebx, esi
+ *     0x0059F8AD  jl  fail             <- taken, returns 0
+ *
+ * so heap creation fails, and a clobbered edi then defeats the caller's own
+ * "cmp eax, edi / je" check of that failure, letting CRT init continue with a
+ * null heap.
+ *
+ * regen.sh passes --exclude-manual, so tools.recomp reads this file and skips
+ * generating a body for anything defined here; this definition links instead.
+ *
+ * cdecl: on entry g_esp points at the return address, arguments above it, and
+ * the caller cleans the stack. memmove rather than memcpy because the original
+ * tests for overlap (cmp edi, esi / jbe) and handles it.
+ *
+ * ponytail: a per-title workaround for a toolkit bug. The general fix is for
+ * disasm to recognise the jump table, or for func_id + recomp to emit native
+ * bodies for identified CRT routines -- func_id's memcpy signature does not
+ * even match this one, because HL2's orders the loads esi/ecx/edi where the
+ * signature expects esi/edi/ecx.
+ */
+void sub_005AD700(void)
+{
+    uint32_t dest = MEM32(g_esp + 4);
+    uint32_t src  = MEM32(g_esp + 8);
+    uint32_t n    = MEM32(g_esp + 12);
+
+    if (n)
+        memmove((void *)XBOX_PTR(dest), (const void *)XBOX_PTR(src), n);
+
+    if (getenv("RECOMP_TRACE_MEMCPY")) {
+        static int shown;
+        if (shown++ < 6) {
+            uint32_t i;
+            fprintf(stderr, "[MEMCPY] dst=0x%08X src=0x%08X n=%u  src bytes:",
+                    dest, src, n);
+            for (i = 0; i < n && i < 48; i += 4)
+                fprintf(stderr, " %08X", MEM32(src + i));
+            fprintf(stderr, "\n");
+        }
+    }
+
+    g_eax = dest;          /* memcpy returns its destination */
+    g_esp += 4;            /* pop the return address; caller pops the args */
 }
