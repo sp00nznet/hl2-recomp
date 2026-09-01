@@ -85,6 +85,12 @@ extern ptrdiff_t g_xbox_mem_offset;
  *       g_eax = result;
  *   }
  */
+void sub_005AD700(void);
+void sub_005AE3D0(void);
+void sub_0059DE80(void);
+void sub_005ADC0B(void);
+void sub_000C6719(void);
+
 recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
 {
     /*
@@ -95,7 +101,20 @@ recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
      * if (xbox_va == 0x000ABCDE) return fixed_sub_000ABCDE;
      */
 
-    (void)xbox_va;
+    /* The natively-implemented functions below.
+     *
+     * regen.sh passes --exclude-manual, so tools/recomp neither generates a
+     * body for these nor emits a dispatch-table entry. Direct calls still bind
+     * by symbol, but an *indirect* call to one of these VAs would find nothing
+     * in recomp_lookup and be dropped as unresolved. This hook is consulted
+     * first, which is exactly what it is for.
+     */
+    if (xbox_va == 0x005AD700u) return sub_005AD700;   /* memcpy */
+    if (xbox_va == 0x005AE3D0u) return sub_005AE3D0;   /* memmove */
+    if (xbox_va == 0x0059DE80u) return sub_0059DE80;   /* _initterm */
+    if (xbox_va == 0x005ADC0Bu) return sub_005ADC0B;   /* atexit */
+    if (xbox_va == 0x000C6719u) return sub_000C6719;   /* RBTree FindParent */
+
     return (recomp_func_t)0;
 }
 
@@ -435,4 +454,98 @@ void sub_005ADC0B(void)
 
     g_eax = 0;                 /* atexit returns 0 on success */
     g_esp += 4;                /* pop the return address; caller pops the arg */
+}
+
+/* ---------------------------------------------------------------------------
+ * sub_000C6719 -- CUtlRBTree::FindParent, implemented natively.
+ *
+ * thiscall: ecx = tree, then (key, unsigned short *pParent, bool *pLeft).
+ * Descends from m_Root comparing with the tree's LessFunc, recording the last
+ * node visited and which way the search went -- the insertion point.
+ *
+ * The lifted version is faithful; the tree it walks is not. Static
+ * initialisation reaches constructor #736 and stops here, with the samples
+ * alternating between this function, the comparator at 0x0001D0F8 and stricmp.
+ * A descent through a binary tree cannot loop, so the links form a cycle.
+ *
+ * This is the same trade as the __try around each constructor: detect it,
+ * report it once with the cycle, and carry on with the last good parent
+ * rather than spinning forever. An insert against a cyclic tree is wrong
+ * either way -- but a wrong insert that returns lets the remaining 4,500
+ * constructors run and shows what else is broken, which spinning does not.
+ *
+ * ponytail: a fixed 64-entry visited ring, not a set. A real tree of N nodes
+ * is ~log2(N) deep, so anything past 64 is already pathological.
+ */
+#define RBTREE_INVALID 0xFFFFu
+
+static void call_guest(uint32_t fn, uint32_t guest_ret)
+{
+    recomp_func_t f = recomp_lookup_manual(fn);
+
+    if (!f) f = recomp_lookup(fn);
+    if (!f) f = recomp_lookup_kernel(fn);
+    if (!f) {
+        g_eax = 0;
+        return;
+    }
+    g_esp -= 4;
+    MEM32(g_esp) = guest_ret;
+    f();
+}
+
+void sub_000C6719(void)
+{
+    uint32_t tree     = g_ecx;
+    uint32_t key      = MEM32(g_esp + 4);
+    uint32_t p_parent = MEM32(g_esp + 8);
+    uint32_t p_left   = MEM32(g_esp + 12);
+    uint32_t less_fn  = MEM32(tree);
+    uint32_t elements = MEM32(tree + 4);
+    uint32_t idx      = MEM16(tree + 0x10);
+    uint16_t seen[64];
+    unsigned depth = 0;
+
+    MEM16(p_parent) = RBTREE_INVALID;
+    MEM8(p_left) = 0;
+
+    while (idx != RBTREE_INVALID) {
+        uint32_t links, node;
+        unsigned i;
+        int less;
+
+        for (i = 0; i < depth; i++) {
+            if (seen[i] == (uint16_t)idx) {
+                static int reported;
+                if (reported++ < 4)
+                    fprintf(stderr,
+                            "[RBTREE] cycle at tree 0x%08X: node %u "
+                            "revisited after %u steps; stopping\n",
+                            tree, (unsigned)idx, depth);
+                fflush(stderr);
+                idx = RBTREE_INVALID;
+                break;
+            }
+        }
+        if (idx == RBTREE_INVALID)
+            break;
+        if (depth < sizeof(seen) / sizeof(seen[0]))
+            seen[depth++] = (uint16_t)idx;
+        else
+            break;                       /* deeper than any sane tree */
+
+        MEM16(p_parent) = (uint16_t)idx;
+        links = elements + idx * 16;
+        node  = links + 8;
+
+        g_ecx = key;
+        g_edx = node;
+        call_guest(less_fn, 0x000C674Eu);
+        less = (g_eax & 0xFF) != 0;
+
+        MEM8(p_left) = (uint8_t)(less ? 1 : 0);
+        idx = MEM16(links + (less ? 0 : 2));
+    }
+
+    g_esp += 16;                         /* ret 12: return address + 3 args */
 }
