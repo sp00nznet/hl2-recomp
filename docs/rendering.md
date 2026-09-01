@@ -210,6 +210,36 @@ Three measurements pin this down, and each was needed:
 it -- a distinction that took both the frequency count and the running total to
 establish, and that a first reading of the evidence got backwards.
 
+### Why no factory is registered: the static-init walk stops at 8%
+
+`sub_0059DE80` is MSVC's `_initterm`. Its second loop walks the C++
+constructor array with `esi` as the cursor and `edi` as the limit:
+
+```
+esi = 0x7A3530; edi = 0x7A8818;      /* 5,306 slots, 5,305 non-null */
+loop: eax = MEM32(esi);
+      if (eax && eax != -1) ICALL(eax);
+      esi += 4; if (esi < edi) goto loop;
+```
+
+A probe at its epilogue caught it leaving with `esi = 0x00F7FECC` and
+`edi = 0x00F7FEC4` -- both *stack* addresses, and `esi < edi` false, so the
+loop had already exited. The recompiler keeps `esi`/`edi` in globals rather
+than on the host stack, so a callee that fails to restore them corrupts the
+caller directly. Total indirect calls for the whole run was 461 against 5,305
+constructors: the walk ran 8% of the list.
+
+The cause was in the disassembler. MSVC parks a switch table *inside* the
+function body, and `tools.disasm` decoded those code pointers as instructions,
+came out of phase, and never reached the epilogue -- so `pop esi / pop edi`
+was never lifted. 219 such tables in this XBE. Fixed upstream (see
+[upstreaming.md](upstreaming.md)); `memcpy` alone went from 262 lifted bytes
+to its real 664, and 38 functions regained 8,168 bytes of body.
+
+`-DRECOMP_ABI_CHECK` now reports any function that returns with `ebx`, `esi`
+or `edi` changed, so the next one of these is a build flag rather than six
+wrong theories and a hand-placed probe.
+
 So the remaining problem is not lifting and not the list: **no factory is
 registered for the filesystem interface**. In Source, `EXPOSE_INTERFACE` builds
 that registration from a static constructor, and static initialisation now runs.

@@ -28,6 +28,8 @@ The test is one question: **would another Xbox title want this?**
 | NV2A pushbuffer execution | upstream, `src/kernel/nv2a_pb_exec.c` | The shared blocker for every title's first frame. Fix it once. |
 | `func_id` XDK section ranges | **fixed upstream** | Was a table of Burnout 3's VAs with no way to pass the real ones. See below. |
 | Generated-C banner title | **fixed upstream** | Every title's generated C said "Burnout 3: Takedown". Now read from the XBE certificate. |
+| MSVC embedded switch tables | **fixed upstream** in `tools/disasm/` | `jmp dword ptr [reg*4 + disp]` reads a table MSVC parks inside the function. The sweep decoded it as instructions and came out misaligned, usually losing the epilogue -- so `pop esi / pop edi` was never lifted and *every caller* silently lost those registers. 219 tables in this XBE; 38 functions were truncated, `memcpy` at 262 bytes of its real 664. Nothing about it is HL2-specific: wreckless has 87 tables. |
+| `-DRECOMP_ABI_CHECK` | **upstreamed** to `templates/runtime/recomp_types.h` | Three compares per indirect call that name any function returning with `ebx`/`esi`/`edi` changed. Built to find the above by measurement instead of by the six wrong theories it actually took. |
 | `recomp_types.h` | **not copied here** | Every other title repo has its own copy; Bloodwake's and Burnout 3's have since diverged from the template by 641 and 983 lines. This repo includes `${XBOXRECOMP_DIR}/templates/runtime` instead, so it cannot drift. |
 
 ## Worked example: the Burnout 3 section table
