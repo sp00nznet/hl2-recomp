@@ -26,5 +26,13 @@
  {
   "start": "0x000618C1",
   "note": "Unresolved indirect-call target from the same run. In a gap, and decodes as a complete thiscall constructor returning this: mov esi, ecx; call 0x002A2711; and [esi+0xC], 0; mov eax, esi; ret."
+ },
+ {
+  "start": "0x005AC780",
+  "note": "Unresolved indirect-call target, observed by the ICALL feedback dump on the run that reaches module loading. Sits in the gap between sub_005AC750 and 0x005AC7B0 and decodes as a complete thiscall predicate: call 0x00581700; if true call 0x00581550; return 1. Its address is never an immediate -- it reaches a vtable slot only at runtime -- so no static pass can find it."
+ },
+ {
+  "start": "0x005B21FB",
+  "note": "Thread start routine, observed as PsCreateSystemThreadEx ctx1 on the run that completes static init. Lands inside sub_005B21F1 rather than at its start, so _pass_seed_aliases turns it into an alias; no static pass can find it, because the address only exists as an argument passed at runtime."
  }
 ]

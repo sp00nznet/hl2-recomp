@@ -251,6 +251,15 @@ static DWORD WINAPI hang_watchdog(LPVOID arg)
                         now, now - prev);
                 prev = now;
             }
+
+            /* Dump observed indirect-branch targets on the last sample.
+             *
+             * The feedback set is normally written at exit, and a title that
+             * hangs never gets there -- which is exactly the run whose
+             * targets are worth having, because the addresses it reached
+             * just before stopping are the ones the static passes missed. */
+            if (sample == 3)
+                RECOMP_ICALL_FEEDBACK_DUMP();
             fflush(stderr);
         }
         ResumeThread(g_guest_thread);
