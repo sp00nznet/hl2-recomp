@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 # Regenerate the recompiled C from hl2_xbox.xbe, in the one order that works.
 #
-#   xbe_parser  section layout -> game/hl2_analysis.json (everything reads this)
-#   rtti        MSVC RTTI -> classes/vtables, and the seed list. Must run BEFORE
-#               disasm: RTTI proves 12k vtable entries are function starts, and
-#               feeding them in finds ~8k functions the linear sweep misses.
-#   disasm      rewrites functions.json from scratch, so every name applied by a
-#               later step is lost and must be re-applied. ~30s for the 6 MB
-#               .text. Only run it when tools/disasm or the seeds changed.
-#   datamaps    Source datamap_t field tables (class / member / byte offset).
-#   func_id     library-function identification (CRT, vtable thunks).
-#   recomp      emits the C.
+#   xbe_parser    section layout -> game/hl2_analysis.json
+#   rtti          MSVC RTTI -> classes/vtables + the seed list. Lives in the
+#                 toolkit, not here: nothing about it is HL2-specific. Must run
+#                 BEFORE disasm -- a vtable slot is proof of a function entry
+#                 point, and seeding them finds ~8k functions the linear sweep
+#                 misses (33,140 -> 41,215).
+#   disasm        rewrites functions.json from scratch, so every name applied by
+#                 a later step is lost and must be re-applied. ~30s for the
+#                 6 MB .text. Only re-run when tools/disasm or the seeds change.
+#   func_id       library-function identification (CRT, vtable thunks).
+#   abi_analysis  calling convention / params / return type. Without it every
+#                 function lifts as cdecl / 0 params / int-or-void and the
+#                 generated signatures carry that guess. 9,307 of HL2's
+#                 functions are thiscall -- it is not optional on a C++ title.
+#   datamaps      Source datamap_t field tables (class / member / byte offset).
+#                 HL2-specific, so it stays in this repo.
+#   recomp        emits the C.
 #
 # Usage: ./regen.sh [--disasm]
 
@@ -33,8 +40,8 @@ if [[ "${1:-}" == "--disasm" ]]; then
         --json "$HL2/game/hl2_analysis.json" --quiet)
 
     echo "==> rtti (seeds)"
-    py -3 "$HL2/tools/rtti.py" "$XBE" "$HL2/game/hl2_analysis.json" \
-        -o "$HL2/build/rtti.json" --seeds "$HL2/game/rtti_seeds.json"
+    (cd "$RECOMP" && py -3 -m tools.rtti "$XBE" \
+        -o "$HL2/build/rtti.json" --seeds "$HL2/game/rtti_seeds.json")
 
     echo "==> disasm"
     (cd "$RECOMP" && py -3 -m tools.disasm "$XBE" \
@@ -44,22 +51,29 @@ if [[ "${1:-}" == "--disasm" ]]; then
         | tr '\r' '\n' | grep -E "Realigned|Total functions|Reachable|Seeded")
 fi
 
-echo "==> datamaps"
-py -3 "$HL2/tools/datamaps.py" "$XBE" "$HL2/game/hl2_analysis.json" \
-    -o "$HL2/build/datamaps.json"
-
 echo "==> func_id"
 (cd "$RECOMP" && py -3 -m tools.func_id "$XBE" \
     --functions "$HL2/build/disasm/functions.json" \
     --strings   "$HL2/build/disasm/strings.json" \
     --xrefs     "$HL2/build/disasm/xrefs.json" \
-    -o "$HL2/build/func_id" >/dev/null)
+    -o "$HL2/build/func_id" | tail -1)
+
+echo "==> abi_analysis"
+(cd "$RECOMP" && py -3 -m tools.abi_analysis "$XBE" \
+    --functions  "$HL2/build/disasm/functions.json" \
+    --identified "$HL2/build/func_id/identified_functions.json" \
+    --output-dir "$HL2/build/abi" | tail -1)
+
+echo "==> datamaps"
+py -3 "$HL2/tools/datamaps.py" "$XBE" "$HL2/game/hl2_analysis.json" \
+    -o "$HL2/build/datamaps.json"
 
 echo "==> recomp"
 (cd "$RECOMP" && py -3 -m tools.recomp "$XBE" --all --split 1000 \
     --disasm-dir  "$HL2/build/disasm" \
     --func-id-dir "$HL2/build/func_id" \
+    --abi-dir     "$HL2/build/abi" \
     --gen-dir     "$HL2/src/game/recomp/gen" \
     -o "$HL2/build/recomp" | grep -aE "unresolved|functions \(|Complete")
 
-echo "==> done"
+echo "==> done. Now: cmake --build build-msvc --config Release"

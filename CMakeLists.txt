@@ -29,4 +29,4 @@ set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../xboxrecomp" CACHE PATH "Path 
 add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 
 # ── Recompiled game executable ─────────────────────────────
-# add_subdirectory(src/game)   # enable once the kernel layer is wired up
+add_subdirectory(src/game)
