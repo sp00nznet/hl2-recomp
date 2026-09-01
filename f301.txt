@@ -1,0 +1,115 @@
+sub_0059F301:
+  0x0059F301  55                      push     ebp                            
+  0x0059F302  8bec                    mov      ebp, esp                       
+  0x0059F304  83ec0c                  sub      esp, 0xc                       
+  0x0059F307  8b4520                  mov      eax, dword ptr [ebp + 0x20]    
+  0x0059F30A  2b4518                  sub      eax, dword ptr [ebp + 0x18]    
+  0x0059F30D  53                      push     ebx                            
+  0x0059F30E  99                      cdq                                     
+  0x0059F30F  bb00100000              mov      ebx, 0x1000                    
+  0x0059F314  8bcb                    mov      ecx, ebx                       
+  0x0059F316  f7f9                    idiv     ecx                            
+  0x0059F318  56                      push     esi                            
+  0x0059F319  8b750c                  mov      esi, dword ptr [ebp + 0xc]     
+  0x0059F31C  57                      push     edi                            
+  0x0059F31D  8d7e57                  lea      edi, [esi + 0x57]              
+  0x0059F320  83e7f0                  and      edi, 0xfffffff0                
+  0x0059F323  8945f8                  mov      dword ptr [ebp - 8], eax       
+  0x0059F326  8b4508                  mov      eax, dword ptr [ebp + 8]       
+  0x0059F329  3b4518                  cmp      eax, dword ptr [ebp + 0x18]    
+  0x0059F32C  7509                    jne      0x59f337                       
+  0x0059F32E  668b00                  mov      ax, word ptr [eax]             
+  0x0059F331  668945fc                mov      word ptr [ebp - 4], ax         
+  0x0059F335  eb04                    jmp      0x59f33b                       
+                                        ; XREF: 0x0059F32C (cond_jump)
+  0x0059F337  8365fc00                and      dword ptr [ebp - 4], 0         
+                                        ; XREF: 0x0059F335 (jump)
+  0x0059F33B  8b4d1c                  mov      ecx, dword ptr [ebp + 0x1c]    
+  0x0059F33E  8bc7                    mov      eax, edi                       
+  0x0059F340  2bc6                    sub      eax, esi                       
+  0x0059F342  c1f804                  sar      eax, 4                         
+  0x0059F345  8945f4                  mov      dword ptr [ebp - 0xc], eax     
+  0x0059F348  8d4710                  lea      eax, [edi + 0x10]              
+  0x0059F34B  3bc1                    cmp      eax, ecx                       
+  0x0059F34D  7236                    jb       0x59f385                       
+  0x0059F34F  3b4520                  cmp      eax, dword ptr [ebp + 0x20]    
+  0x0059F352  7321                    jae      0x59f375                       
+  0x0059F354  8bc7                    mov      eax, edi                       
+  0x0059F356  2bc1                    sub      eax, ecx                       
+  0x0059F358  83c010                  add      eax, 0x10                      
+  0x0059F35B  6a04                    push     4                              
+  0x0059F35D  89450c                  mov      dword ptr [ebp + 0xc], eax     
+  0x0059F360  53                      push     ebx                            
+  0x0059F361  8d450c                  lea      eax, [ebp + 0xc]               
+  0x0059F364  50                      push     eax                            
+  0x0059F365  6a00                    push     0                              
+  0x0059F367  8d451c                  lea      eax, [ebp + 0x1c]              
+  0x0059F36A  50                      push     eax                            
+  0x0059F36B  ff1544626200            call     dword ptr [0x626244]           ; -> xbox_NtAllocateVirtualMemory
+  0x0059F371  85c0                    test     eax, eax                       
+  0x0059F373  7d07                    jge      0x59f37c                       
+                                        ; XREF: 0x0059F352 (cond_jump)
+  0x0059F375  32c0                    xor      al, al                         
+  0x0059F377  e99c000000              jmp      0x59f418                       
+                                        ; XREF: 0x0059F373 (cond_jump)
+  0x0059F37C  8b4d1c                  mov      ecx, dword ptr [ebp + 0x1c]    
+  0x0059F37F  034d0c                  add      ecx, dword ptr [ebp + 0xc]     
+  0x0059F382  894d1c                  mov      dword ptr [ebp + 0x1c], ecx    
+                                        ; XREF: 0x0059F34D (cond_jump)
+  0x0059F385  8b4520                  mov      eax, dword ptr [ebp + 0x20]    
+  0x0059F388  2bc1                    sub      eax, ecx                       
+  0x0059F38A  99                      cdq                                     
+  0x0059F38B  bb00100000              mov      ebx, 0x1000                    
+  0x0059F390  f7fb                    idiv     ebx                            
+  0x0059F392  668b55fc                mov      dx, word ptr [ebp - 4]         
+  0x0059F396  8a5d10                  mov      bl, byte ptr [ebp + 0x10]      
+  0x0059F399  66895602                mov      word ptr [esi + 2], dx         
+  0x0059F39D  668b55f4                mov      dx, word ptr [ebp - 0xc]       
+  0x0059F3A1  668916                  mov      word ptr [esi], dx             
+  0x0059F3A4  8b5514                  mov      edx, dword ptr [ebp + 0x14]    
+  0x0059F3A7  895614                  mov      dword ptr [esi + 0x14], edx    
+  0x0059F3AA  8b5508                  mov      edx, dword ptr [ebp + 8]       
+  0x0059F3AD  895618                  mov      dword ptr [esi + 0x18], edx    
+  0x0059F3B0  8b5518                  mov      edx, dword ptr [ebp + 0x18]    
+  0x0059F3B3  895620                  mov      dword ptr [esi + 0x20], edx    
+  0x0059F3B6  8b55f8                  mov      edx, dword ptr [ebp - 8]       
+  0x0059F3B9  c1e20c                  shl      edx, 0xc                       
+  0x0059F3BC  035518                  add      edx, dword ptr [ebp + 0x18]    
+  0x0059F3BF  c6460501                mov      byte ptr [esi + 5], 1          
+  0x0059F3C3  89562c                  mov      dword ptr [esi + 0x2c], edx    
+  0x0059F3C6  8b55f8                  mov      edx, dword ptr [ebp - 8]       
+  0x0059F3C9  885e04                  mov      byte ptr [esi + 4], bl         
+  0x0059F3CC  c74610eeffeeff          mov      dword ptr [esi + 0x10], 0xffeeffee 
+  0x0059F3D3  897e28                  mov      dword ptr [esi + 0x28], edi    
+  0x0059F3D6  895624                  mov      dword ptr [esi + 0x24], edx    
+  0x0059F3D9  85c0                    test     eax, eax                       
+  0x0059F3DB  894630                  mov      dword ptr [esi + 0x30], eax    
+  0x0059F3DE  740e                    je       0x59f3ee                       
+  0x0059F3E0  c1e00c                  shl      eax, 0xc                       
+  0x0059F3E3  50                      push     eax                            
+  0x0059F3E4  51                      push     ecx                            
+  0x0059F3E5  56                      push     esi                            
+  0x0059F3E6  e810f5ffff              call     0x59e8fb                       ; -> sub_0059E8FB
+  0x0059F3EB  8b4d1c                  mov      ecx, dword ptr [ebp + 0x1c]    
+                                        ; XREF: 0x0059F3DE (cond_jump)
+  0x0059F3EE  8b5508                  mov      edx, dword ptr [ebp + 8]       
+  0x0059F3F1  0fb6c3                  movzx    eax, bl                        
+  0x0059F3F4  2bcf                    sub      ecx, edi                       
+  0x0059F3F6  89748260                mov      dword ptr [edx + eax*4 + 0x60], esi 
+  0x0059F3FA  668b06                  mov      ax, word ptr [esi]             
+  0x0059F3FD  c1f904                  sar      ecx, 4                         
+  0x0059F400  51                      push     ecx                            
+  0x0059F401  57                      push     edi                            
+  0x0059F402  c6470510                mov      byte ptr [edi + 5], 0x10       
+  0x0059F406  897e40                  mov      dword ptr [esi + 0x40], edi    
+  0x0059F409  52                      push     edx                            
+  0x0059F40A  66894702                mov      word ptr [edi + 2], ax         
+  0x0059F40E  885f04                  mov      byte ptr [edi + 4], bl         
+  0x0059F411  e8a8f9ffff              call     0x59edbe                       ; -> sub_0059EDBE
+  0x0059F416  b001                    mov      al, 1                          
+                                        ; XREF: 0x0059F377 (jump)
+  0x0059F418  5f                      pop      edi                            
+  0x0059F419  5e                      pop      esi                            
+  0x0059F41A  5b                      pop      ebx                            
+  0x0059F41B  c9                      leave                                   
+  0x0059F41C  c21c00                  ret      0x1c                           

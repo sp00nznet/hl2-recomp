@@ -142,6 +142,29 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
         fprintf(stderr, "  heap hdr @0x%08X: sig=%08X (expect EEFFEEFF)  "
                         "bucket0 Flink=%08X (expect %08X)\n",
                 g_esi, hdr[4], b0[0], g_esi + 0x180);
+        /* Where did RtlCreateHeap actually write its header?
+         *
+         * The initialisation loop and the allocator both index from what should
+         * be the same heap base. If the signature turns up at some other
+         * address they disagree, which is a different bug from the loop never
+         * running at all. Scan the arena for it. */
+        {
+            const uint32_t *scan = (const uint32_t *)
+                ((uintptr_t)g_xbox_mem_offset + 0x00F80000u);
+            uint32_t i, found = 0;
+            for (i = 0; i < (0x03000000u / 4); i++) {
+                if (scan[i] == 0xEEFFEEFFu) {
+                    fprintf(stderr, "  found EEFFEEFF at guest 0x%08X"
+                                    " (heap base would be 0x%08X)\n",
+                            0x00F80000u + i * 4, 0x00F80000u + i * 4 - 0x10);
+                    if (++found == 4)
+                        break;
+                }
+            }
+            if (!found)
+                fprintf(stderr, "  no EEFFEEFF in the arena: the header was"
+                                " never written anywhere\n");
+        }
     }
     fflush(stderr);
     return EXCEPTION_CONTINUE_SEARCH;

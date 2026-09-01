@@ -185,3 +185,49 @@ void sub_005AD700(void)
     g_eax = dest;          /* memcpy returns its destination */
     g_esp += 4;            /* pop the return address; caller pops the args */
 }
+
+/* An indirect call whose target is not code: a null or wild function pointer.
+ *
+ * Skipping these is right -- calling a data address is worse -- but skipping
+ * them *silently* is not. They almost always arrive inside a loop, so the
+ * symptom is a hang with no output rather than a diagnosable null vtable call.
+ *
+ * Rate-limited per address: a spin can produce millions of these, and the
+ * useful information is which addresses occur, not how often.
+ */
+void recomp_icall_not_code_log(uint32_t va)
+{
+    enum { SLOTS = 16 };
+    static uint32_t seen[SLOTS];
+    static uint64_t hits[SLOTS];
+    static int count;
+    int i;
+
+    for (i = 0; i < count; i++)
+        if (seen[i] == va)
+            break;
+    if (i == count) {
+        if (count == SLOTS)
+            return;
+        seen[count] = va;
+        hits[count] = 0;
+        count++;
+    }
+    hits[i]++;
+    /* Report at 1, 10, 100, 1000 ... rather than once. A single line says a
+     * wild pointer was skipped; the progression says it is being skipped in a
+     * loop, which is the difference between a curiosity and the reason the
+     * title is hung. */
+    {
+        uint64_t n = hits[i];
+        while (n >= 10 && n % 10 == 0)
+            n /= 10;
+        if (n != 1)
+            return;
+    }
+    fprintf(stderr, "[ICALL] target 0x%08X is not code -- skipped %llu time(s) "
+                    "(null or wild function pointer, at call #%llu)\n",
+            va, (unsigned long long)hits[i],
+            (unsigned long long)g_icall_count);
+    fflush(stderr);
+}
