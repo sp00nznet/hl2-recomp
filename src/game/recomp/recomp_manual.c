@@ -391,3 +391,48 @@ void sub_0059DE80(void)
     g_edi = edi0;
     g_esp += 4;                          /* pop the return address */
 }
+
+/* ---------------------------------------------------------------------------
+ * sub_005ADC0B -- atexit, implemented natively.
+ *
+ * 1,587 callers, and every C++ static initialiser with a destructor goes
+ * through it. It is also the single choke point that was corrupting them: the
+ * -DHL2_ABI_CHECK run traced both clobbering constructors to the same chain,
+ * atexit -> __onexit (sub_005ADBD3, sub_005ADB2B) -> realloc (sub_005B2C88),
+ * which grows the atexit table and returns with esi, edi and ebx holding stack
+ * addresses. Those are the constructor walk's cursor and limit, so the damage
+ * lands on the caller rather than on the CRT.
+ *
+ * atexit's actual job is to append one function pointer to a list that runs at
+ * shutdown. Keeping that list natively skips the whole realloc path. The
+ * recorded pointers are guest VAs; nothing runs them yet, because the title
+ * has never reached a clean shutdown -- when it does, walking this in reverse
+ * is the whole implementation.
+ *
+ * ponytail: fixed array, not a growable one. The guest's own table starts at
+ * 32 entries and this title registers a few thousand; 8192 is past any real
+ * count and costs 32 KB. If it ever fills, that is worth knowing about, so it
+ * says so rather than silently dropping.
+ */
+static uint32_t g_atexit_fns[8192];
+static unsigned g_atexit_count;
+
+void sub_005ADC0B(void)
+{
+    uint32_t fn = MEM32(g_esp + 4);
+
+    if (fn) {
+        if (g_atexit_count < (unsigned)(sizeof(g_atexit_fns) /
+                                        sizeof(g_atexit_fns[0]))) {
+            g_atexit_fns[g_atexit_count++] = fn;
+        } else {
+            static int warned;
+            if (!warned++)
+                fprintf(stderr, "[ATEXIT] table full at %u; further handlers dropped\n",
+                        g_atexit_count);
+        }
+    }
+
+    g_eax = 0;                 /* atexit returns 0 on success */
+    g_esp += 4;                /* pop the return address; caller pops the arg */
+}
