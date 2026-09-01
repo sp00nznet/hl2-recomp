@@ -400,19 +400,28 @@ int main(int argc, char **argv)
         return 1;
     printf("XBE loaded: %zu bytes\n", xbe_size);
 
-    /* NOT calling xbox_SetTotalRam here, deliberately.
+    /* Deliberately NOT calling xbox_SetMapSize yet.
      *
-     * The guest does outgrow 64 MB: its allocator walks upward in 4 MB
-     * steps -- 0x05B80000, 0x05F80000 ... 0x08780000 -- and a CUtlRBTree
-     * element array landed at 0x0CB80000, 213 MB up. Past the mapping,
-     * reads and writes never reach guest memory, so freshly written tree
-     * links read back as zero and every search on that tree spins.
+     * At 64 MB the runtime mirrors RAM at 64 MB intervals, because a real
+     * Xbox wraps addresses on a 26-bit bus. This title sub-allocates past
+     * the top of RAM, so those allocations alias low memory: its first
+     * commit past the boundary (0x04F80000) lands on the base of the live
+     * heap (0x00F80000), and a CUtlRBTree element array at 0x0CB80000
+     * aliases 0x00B80000. That is what caps static init at constructor
+     * 4,302 -- the tree's links are overwritten between one insert and the
+     * next search, with no write to them.
      *
-     * But raising it does not help: both 128 MB and 256 MB fault during CRT
-     * init, before a single constructor runs, so something in the layout
-     * does not generalise off the 64 MB default. The climbing allocation
-     * pattern is the more likely defect anyway -- real hardware would not
-     * hand out a fresh 4 MB region per small allocation.
+     * xbox_SetMapSize(256 MB) plus the reserve arena fixes the aliasing
+     * and the reserve is granted in full rather than clamped. But it then
+     * faults at kernel call 148, in _memicmp via the CRT path that reads
+     * 0x006262D4 -> 0x80000146, a pointer into low kernel memory through
+     * the physical mirror. That read only appeared to work at 64 MB
+     * because the surrounding buffers aliased data that happened to be
+     * initialised. Turning the mapping up needs the low-memory/KPCR
+     * emulation to be real first.
+     *
+     * So: 4,302 constructors with the aliasing, versus 0 without it and a
+     * known next problem. Keeping the working one, with the knob ready.
      */
     if (!xbox_MemoryLayoutInit(xbe_data, xbe_size)) {
         fprintf(stderr, "Xbox memory layout init failed "
