@@ -400,29 +400,22 @@ int main(int argc, char **argv)
         return 1;
     printf("XBE loaded: %zu bytes\n", xbe_size);
 
-    /* Deliberately NOT calling xbox_SetMapSize yet.
+    /* Map 256 MB of address space; RAM stays 64 MB.
      *
-     * At 64 MB the runtime mirrors RAM at 64 MB intervals, because a real
-     * Xbox wraps addresses on a 26-bit bus. This title sub-allocates past
-     * the top of RAM, so those allocations alias low memory: its first
-     * commit past the boundary (0x04F80000) lands on the base of the live
-     * heap (0x00F80000), and a CUtlRBTree element array at 0x0CB80000
-     * aliases 0x00B80000. That is what caps static init at constructor
-     * 4,302 -- the tree's links are overwritten between one insert and the
-     * next search, with no write to them.
+     * The runtime mirrors RAM at intervals of the mapped size, because a
+     * real Xbox wraps on a 26-bit bus. This title sub-allocates past the
+     * top of RAM, so at 64 MB those allocations alias live low memory --
+     * its first commit past the boundary (0x04F80000) lands on the base of
+     * the heap (0x00F80000), and a CUtlRBTree element array at 0x0CB80000
+     * aliases 0x00B80000. Its links were then overwritten between one
+     * insert and the next search, with no write to them.
      *
-     * xbox_SetMapSize(256 MB) plus the reserve arena fixes the aliasing
-     * and the reserve is granted in full rather than clamped. But it then
-     * faults at kernel call 148, in _memicmp via the CRT path that reads
-     * 0x006262D4 -> 0x80000146, a pointer into low kernel memory through
-     * the physical mirror. That read only appeared to work at 64 MB
-     * because the surrounding buffers aliased data that happened to be
-     * initialised. Turning the mapping up needs the low-memory/KPCR
-     * emulation to be real first.
-     *
-     * So: 4,302 constructors with the aliasing, versus 0 without it and a
-     * known next problem. Keeping the working one, with the knob ready.
+     * Mapping more is not the same as claiming more RAM: the heap top and
+     * everything the guest is told about memory derive from
+     * g_xbox_total_ram, which stays at 64 MB.
      */
+    xbox_SetMapSize(256u * 1024u * 1024u);
+
     if (!xbox_MemoryLayoutInit(xbe_data, xbe_size)) {
         fprintf(stderr, "Xbox memory layout init failed "
                         "(required VA range unavailable?)\n");
