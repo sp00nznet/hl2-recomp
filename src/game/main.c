@@ -164,6 +164,42 @@ static void print_guest_stack(void)
     }
 }
 
+/* Hardware write watchpoint on a guest address.
+ *
+ * When a value is correct at one point and wrong at the next, the question is
+ * who wrote it, and reading candidate code does not answer that -- the writer
+ * is usually not among the functions you suspected. x86 debug registers do:
+ * DR0 holds the address, DR7 arms a 4-byte write breakpoint, and the trap
+ * arrives in the same handler that already turns a host RIP into a guest
+ * function name.
+ *
+ * Per-thread, so this has to be called on the guest thread. The address is a
+ * guest VA and gets mapped through g_xbox_mem_offset.
+ */
+static uintptr_t g_watch_host;
+
+void recomp_watch_guest_write(uint32_t guest_va)
+{
+    CONTEXT ctx;
+
+    if (!g_xbox_mem_offset || g_watch_host)
+        return;                          /* one at a time is enough */
+
+    g_watch_host = (uintptr_t)g_xbox_mem_offset + guest_va;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    if (!GetThreadContext(GetCurrentThread(), &ctx))
+        return;
+    ctx.Dr0 = (DWORD64)g_watch_host;
+    /* L0 | (RW0 = 01: write) | (LEN0 = 11: four bytes) */
+    ctx.Dr7 = (DWORD64)((1u << 0) | (1u << 16) | (3u << 18));
+    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    if (SetThreadContext(GetCurrentThread(), &ctx))
+        fprintf(stderr, "[WATCH] armed on guest 0x%08X (host %p)\n",
+                guest_va, (void *)g_watch_host);
+    fflush(stderr);
+}
+
 /* Say where the guest is stuck.
 
  * A hang gives you nothing: no fault, no output, and with a tight loop in
@@ -231,6 +267,18 @@ static unsigned g_fault_reports;
 static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
 {
     const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+
+    if (er->ExceptionCode == EXCEPTION_SINGLE_STEP && g_watch_host) {
+        static unsigned hits;
+        if (hits++ < 8) {
+            fprintf(stderr, "\n[WATCH] write to guest 0x%08X\n",
+                    (uint32_t)(g_watch_host - (uintptr_t)g_xbox_mem_offset));
+            print_host_symbol((void *)(uintptr_t)ep->ContextRecord->Rip);
+            fflush(stderr);
+        }
+        ep->ContextRecord->Dr6 = 0;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
 
     if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
         return EXCEPTION_CONTINUE_SEARCH;
@@ -352,6 +400,20 @@ int main(int argc, char **argv)
         return 1;
     printf("XBE loaded: %zu bytes\n", xbe_size);
 
+    /* NOT calling xbox_SetTotalRam here, deliberately.
+     *
+     * The guest does outgrow 64 MB: its allocator walks upward in 4 MB
+     * steps -- 0x05B80000, 0x05F80000 ... 0x08780000 -- and a CUtlRBTree
+     * element array landed at 0x0CB80000, 213 MB up. Past the mapping,
+     * reads and writes never reach guest memory, so freshly written tree
+     * links read back as zero and every search on that tree spins.
+     *
+     * But raising it does not help: both 128 MB and 256 MB fault during CRT
+     * init, before a single constructor runs, so something in the layout
+     * does not generalise off the 64 MB default. The climbing allocation
+     * pattern is the more likely defect anyway -- real hardware would not
+     * hand out a fresh 4 MB region per small allocation.
+     */
     if (!xbox_MemoryLayoutInit(xbe_data, xbe_size)) {
         fprintf(stderr, "Xbox memory layout init failed "
                         "(required VA range unavailable?)\n");

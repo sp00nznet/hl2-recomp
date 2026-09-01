@@ -90,6 +90,8 @@ void sub_005AE3D0(void);
 void sub_0059DE80(void);
 void sub_005ADC0B(void);
 void sub_000C6719(void);
+void sub_000C85E2(void);
+void recomp_watch_guest_write(uint32_t guest_va);
 
 recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
 {
@@ -114,6 +116,7 @@ recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
     if (xbox_va == 0x0059DE80u) return sub_0059DE80;   /* _initterm */
     if (xbox_va == 0x005ADC0Bu) return sub_005ADC0B;   /* atexit */
     if (xbox_va == 0x000C6719u) return sub_000C6719;   /* RBTree FindParent */
+    if (xbox_va == 0x000C85E2u) return sub_000C85E2;   /* RBTree LinkToParent */
 
     return (recomp_func_t)0;
 }
@@ -509,6 +512,17 @@ void sub_000C6719(void)
     MEM16(p_parent) = RBTREE_INVALID;
     MEM8(p_left) = 0;
 
+    if (getenv("RECOMP_TRACE_RBTREE")) {
+        static int shown;
+        if (shown++ < 20)
+            fprintf(stderr,
+                    "[RBTREE] find  tree=0x%08X root=%u elems=0x%08X "
+                    "node%u=[%u,%u]\n",
+                    tree, (unsigned)idx, elements, (unsigned)idx,
+                    elements ? (unsigned)MEM16(elements + idx * 16) : 0u,
+                    elements ? (unsigned)MEM16(elements + idx * 16 + 2) : 0u);
+    }
+
     while (idx != RBTREE_INVALID) {
         uint32_t links, node;
         unsigned i;
@@ -520,8 +534,17 @@ void sub_000C6719(void)
                 if (reported++ < 4)
                     fprintf(stderr,
                             "[RBTREE] cycle at tree 0x%08X: node %u "
-                            "revisited after %u steps; stopping\n",
-                            tree, (unsigned)idx, depth);
+                            "revisited after %u steps; stopping\n"
+                            "         less=0x%08X elems=0x%08X root=%u "
+                            "count=%u free=%u last=%u node0=[%u,%u]\n",
+                            tree, (unsigned)idx, depth,
+                            MEM32(tree), elements,
+                            (unsigned)MEM16(tree + 0x10),
+                            (unsigned)MEM16(tree + 0x12),
+                            (unsigned)MEM16(tree + 0x14),
+                            (unsigned)MEM16(tree + 0x16),
+                            elements ? (unsigned)MEM16(elements) : 0u,
+                            elements ? (unsigned)MEM16(elements + 2) : 0u);
                 fflush(stderr);
                 idx = RBTREE_INVALID;
                 break;
@@ -548,4 +571,77 @@ void sub_000C6719(void)
     }
 
     g_esp += 16;                         /* ret 12: return address + 3 args */
+}
+
+/* ---------------------------------------------------------------------------
+ * sub_000C85E2 -- CUtlRBTree::LinkToParent, implemented natively.
+ *
+ * thiscall: ecx = tree, then (i, parent, left).
+ *
+ * The tree at 0x0085523C ends up with one element whose links are [0,0]
+ * instead of [0xFFFF,0xFFFF], which makes node 0 its own child and spins every
+ * later search. This is the only function that writes those links, so either
+ * it is lifted wrongly or something later overwrites them. Doing it natively
+ * settles which: if the links are still [0,0] afterwards, the write is not the
+ * problem.
+ *
+ * RECOMP_TRACE_RBTREE prints each link so the sequence can be read directly.
+ */
+void sub_000C85E2(void)
+{
+    uint32_t tree     = g_ecx;
+    uint32_t i        = MEM32(g_esp + 4) & 0xFFFFu;
+    uint32_t parent   = MEM32(g_esp + 8) & 0xFFFFu;
+    uint32_t left     = MEM32(g_esp + 12) & 0xFFu;
+    uint32_t elements = MEM32(tree + 4);
+    uint32_t links    = elements + i * 16;
+
+    MEM16(links)     = 0xFFFFu;          /* Left  */
+    MEM16(links + 2) = 0xFFFFu;          /* Right */
+    MEM16(links + 4) = (uint16_t)parent; /* Parent */
+    MEM16(links + 6) = 0;                /* Tag (red) */
+
+    if (parent != 0xFFFFu) {
+        uint32_t plinks = elements + parent * 16;
+        if (left)
+            MEM16(plinks) = (uint16_t)i;
+        else
+            MEM16(plinks + 2) = (uint16_t)i;
+    } else {
+        MEM16(tree + 0x10) = (uint16_t)i;    /* m_Root */
+    }
+
+    if (getenv("RECOMP_TRACE_RBTREE")) {
+        static int shown;
+        if (shown++ < 20)
+            fprintf(stderr,
+                    "[RBTREE] link tree=0x%08X i=%u parent=%u left=%u "
+                    "elems=0x%08X -> node%u=[%u,%u]\n",
+                    tree, i, parent, left, elements, i,
+                    (unsigned)MEM16(links), (unsigned)MEM16(links + 2));
+    }
+
+    /* Rebalance, exactly as the original tail does: ecx = this, one argument,
+     * and it cleans that argument itself (ret 4). */
+    g_esp -= 4;
+    MEM32(g_esp) = i;
+    g_ecx = tree;
+    call_guest(0x000C7F18u, 0x000C8637u);
+
+    /* Arm a hardware watchpoint on the links we just wrote. They are
+     * correct here and zero by the next search, and reading candidate
+     * code has not found the writer -- so let the CPU name it. */
+    if (getenv("RECOMP_WATCH_RBTREE"))
+        recomp_watch_guest_write(links);
+
+    if (getenv("RECOMP_TRACE_RBTREE")) {
+        static int after;
+        if (after++ < 20)
+            fprintf(stderr,
+                    "[RBTREE] after rebalance: node%u=[%u,%u] root=%u\n",
+                    i, (unsigned)MEM16(links), (unsigned)MEM16(links + 2),
+                    (unsigned)MEM16(tree + 0x10));
+    }
+
+    g_esp += 16;                         /* ret 12 */
 }
