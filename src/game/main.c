@@ -121,6 +121,28 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
     fprintf(stderr, "  guest regs: eax=%08X ecx=%08X edx=%08X ebx=%08X\n"
                     "              esp=%08X esi=%08X edi=%08X\n",
             g_eax, g_ecx, g_edx, g_ebx, g_esp, g_esi, g_edi);
+    /* The heap free-list bucket the allocator was walking.
+     *
+     * sub_0059FC74 indexes buckets as [esi + edi*8 + 0x180], and an empty one
+     * must hold Flink = Blink = its own address. Printing it says whether
+     * RtlCreateHeap ever initialised the list or whether it was corrupted
+     * later, which are different bugs. */
+    if (g_xbox_mem_offset && g_esi && g_edi < 0x80) {
+        uint32_t bucket = g_esi + g_edi * 8 + 0x180;
+        const uint32_t *p = (const uint32_t *)((uintptr_t)g_xbox_mem_offset + bucket);
+        const uint32_t *hdr = (const uint32_t *)((uintptr_t)g_xbox_mem_offset + g_esi);
+        const uint32_t *b0 = (const uint32_t *)((uintptr_t)g_xbox_mem_offset + g_esi + 0x180);
+        fprintf(stderr, "  heap bucket %u @0x%08X: Flink=%08X Blink=%08X"
+                        " (expect both = %08X)\n",
+                g_edi, bucket, p[0], p[1], bucket);
+        /* 0xEEFFEEFF is the signature RtlCreateHeap writes at +0x10 just before
+         * it initialises the free lists. Present means that header block ran and
+         * something cleared the lists afterwards; absent means it never ran.
+         * Bucket 0 says how far the initialisation loop got. */
+        fprintf(stderr, "  heap hdr @0x%08X: sig=%08X (expect EEFFEEFF)  "
+                        "bucket0 Flink=%08X (expect %08X)\n",
+                g_esi, hdr[4], b0[0], g_esi + 0x180);
+    }
     fflush(stderr);
     return EXCEPTION_CONTINUE_SEARCH;
 }
