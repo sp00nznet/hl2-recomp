@@ -46,7 +46,6 @@ typedef void (*recomp_func_t)(void);
 
 /* ── Register state (defined in xbox_memory_layout.c) ──────── */
 
-extern uint32_t g_eax;
 extern ptrdiff_t g_xbox_mem_offset;
 
 /* ── Manual function overrides ─────────────────────────────── */
@@ -230,4 +229,141 @@ void recomp_icall_not_code_log(uint32_t va)
             va, (unsigned long long)hits[i],
             (unsigned long long)g_icall_count);
     fflush(stderr);
+}
+
+/* sub_005AE3D0 -- memmove, the same lost-sync decode as memcpy above.
+ *
+ * Structurally identical to sub_005AD700: same prologue saving edi and esi,
+ * same (dest, src, count) cdecl layout, same 262 bytes, same embedded jump
+ * table that tools.disasm decodes as instructions. So it has the same effect:
+ * the epilogue is never reached and every one of its 61 callers gets esi and
+ * edi clobbered.
+ *
+ * That is not a cosmetic loss here. The C++ static-initialiser driver
+ * (sub_0059DE80) walks 5,314 constructor pointers with esi as the cursor and
+ * edi as the limit, calling each one:
+ *
+ *     esi = 0x7A3530; edi = 0x7A8818;
+ *     loop: eax = MEM32(esi); if (eax) ICALL(eax);
+ *           esi += 4; if (esi < edi) goto loop;
+ *
+ * A callee that does not restore esi ends that loop wherever the clobbered
+ * value lands. Source registers its interfaces from those constructors, so a
+ * truncated loop leaves s_pInterfaceRegs (0x009A9DEC) empty, and the engine
+ * hangs on the first CreateInterface("VFileSystem017") it attempts.
+ */
+void sub_005AE3D0(void)
+{
+    uint32_t dest = MEM32(g_esp + 4);
+    uint32_t src  = MEM32(g_esp + 8);
+    uint32_t n    = MEM32(g_esp + 12);
+
+    if (n)
+        memmove((void *)XBOX_PTR(dest), (const void *)XBOX_PTR(src), n);
+
+    g_eax = dest;
+    g_esp += 4;
+}
+
+/* ---------------------------------------------------------------------------
+ * sub_0059DE80 -- MSVC's _initterm, implemented natively.
+ *
+ * The lifted version is correct; what breaks it is its callees. esi and edi
+ * live in globals here rather than on the host stack, so a constructor that
+ * returns without restoring them rewrites this loop's cursor and limit. A
+ * probe at the epilogue caught exactly that: esi = 0x00F7FECC, edi =
+ * 0x00F7FEC4, both stack addresses, with esi < edi already false. 461 indirect
+ * calls for the entire run against 5,305 constructors -- the walk ran 8% of
+ * the list, so Source registered almost no interfaces and the first
+ * CreateInterface("VFileSystem017") found no factory.
+ *
+ * This does the walk in C and re-establishes esi/edi/ebx/esp around every
+ * constructor, which both survives a misbehaving callee and names it. The
+ * layout is read from the binary, not hardcoded: the two arrays are the ones
+ * the original loads.
+ *
+ * ponytail: forcing esp back after each call papers over a callee that leaves
+ * the stack unbalanced, which is a real bug in that callee. It is reported
+ * rather than fixed here; -DHL2_ABI_CHECK finds the same class of problem
+ * across every indirect call rather than just this loop.
+ */
+#define INITTERM_PRE_LO   0x007A881Cu   /* pre-C++ init table */
+#define INITTERM_PRE_HI   0x007A8830u
+#define INITTERM_CTOR_LO  0x007A3530u   /* the 5,305 C++ constructors */
+#define INITTERM_CTOR_HI  0x007A8818u
+
+static void initterm_call(uint32_t fn, uint32_t *ran, uint32_t *clobbered)
+{
+    recomp_func_t f = recomp_lookup_manual(fn);
+    uint32_t esi0, edi0, ebx0, esp0;
+
+    if (!f) f = recomp_lookup(fn);
+    if (!f) f = recomp_lookup_kernel(fn);
+    if (!f) {
+        fprintf(stderr, "[INITTERM] no body for constructor 0x%08X\n", fn);
+        return;
+    }
+
+    esi0 = g_esi; edi0 = g_edi; ebx0 = g_ebx; esp0 = g_esp;
+    g_esp -= 4;
+    MEM32(g_esp) = 0x0059DECEu;          /* guest return address */
+    f();
+    (*ran)++;
+
+    if (g_esi != esi0 || g_edi != edi0 || g_ebx != ebx0 || g_esp != esp0) {
+        /* Report the first few only: the useful fact is which constructors
+         * misbehave, not how many times the loop noticed. */
+        if ((*clobbered)++ < 12)
+            fprintf(stderr, "[INITTERM] ctor 0x%08X did not restore:"
+                            " esi %08X->%08X edi %08X->%08X"
+                            " ebx %08X->%08X esp %08X->%08X\n",
+                    fn, esi0, g_esi, edi0, g_edi,
+                    ebx0, g_ebx, esp0, g_esp);
+        g_esi = esi0; g_edi = edi0; g_ebx = ebx0; g_esp = esp0;
+    }
+}
+
+static void initterm_walk(uint32_t lo, uint32_t hi,
+                          uint32_t *ran, uint32_t *clobbered)
+{
+    /* RECOMP_TRACE_INITTERM prints each constructor before it runs, so a fault
+     * inside one is attributable to a slot index rather than a bare host
+     * address. 5,305 lines is a lot, but a crash here is otherwise anonymous:
+     * the fault handler sees guest registers and no guest PC. */
+    const int trace = getenv("RECOMP_TRACE_INITTERM") != NULL;
+    uint32_t p;
+
+    for (p = lo; p < hi; p += 4) {
+        uint32_t fn = MEM32(p);
+        if (!fn || fn == 0xFFFFFFFFu)
+            continue;
+        if (trace) {
+            fprintf(stderr, "[INITTERM] #%u slot 0x%08X -> 0x%08X\n",
+                    *ran, p, fn);
+            fflush(stderr);
+        }
+        initterm_call(fn, ran, clobbered);
+    }
+}
+
+void sub_0059DE80(void)
+{
+    uint32_t esi0 = g_esi, edi0 = g_edi;
+    uint32_t ran = 0, clobbered = 0;
+    uint32_t hook = MEM32(0x00817648u);
+
+    if (hook)
+        initterm_call(hook, &ran, &clobbered);
+
+    initterm_walk(INITTERM_PRE_LO, INITTERM_PRE_HI, &ran, &clobbered);
+    ran = 0;
+    initterm_walk(INITTERM_CTOR_LO, INITTERM_CTOR_HI, &ran, &clobbered);
+
+    fprintf(stderr, "[INITTERM] ran %u C++ constructors, %u clobbered "
+                    "callee-saved state\n", ran, clobbered);
+    fflush(stderr);
+
+    g_esi = esi0;
+    g_edi = edi0;
+    g_esp += 4;                          /* pop the return address */
 }

@@ -27,6 +27,7 @@
  */
 
 #include <windows.h>
+#include <dbghelp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,6 +98,35 @@ static BOOL load_xbe(const char *path, void **out_data, size_t *out_size)
  * globals, so they can be printed directly, and the faulting address minus
  * g_xbox_mem_offset says which guest address was touched -- which is what
  * distinguishes a null dereference from a wild pointer. */
+/* Name the host address a fault happened at.
+ *
+ * Recompiled code faults as ordinary native code, so the exception record
+ * carries a host address and nothing else -- there is no guest program
+ * counter to report. But every generated function is a real symbol in the
+ * image (sub_005A03C0 and so on), so the linker's PDB already holds the map
+ * from host address back to guest function. Asking dbghelp turns 'access
+ * violation at 0x142CD9D25', which changes every build and names nothing,
+ * into the guest function that faulted.
+ */
+static void print_host_symbol(void *addr)
+{
+    /* SYMBOL_INFO is variable-length: the name is written past the struct,
+     * so it must be over-allocated with MaxNameLen set to the slack. */
+    char buf[sizeof(SYMBOL_INFO) + 256];
+    SYMBOL_INFO *sym = (SYMBOL_INFO *)buf;
+    DWORD64 disp = 0;
+
+    memset(buf, 0, sizeof(buf));
+    sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+    sym->MaxNameLen = 255;
+
+    if (SymFromAddr(GetCurrentProcess(), (DWORD64)(uintptr_t)addr, &disp, sym))
+        fprintf(stderr, "  in %s+0x%llX\n", sym->Name,
+                (unsigned long long)disp);
+    else
+        fprintf(stderr, "  in <no symbol; keep hl2.pdb beside the exe>\n");
+}
+
 static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
 {
     const EXCEPTION_RECORD *er = ep->ExceptionRecord;
@@ -106,6 +136,7 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
 
     fprintf(stderr, "\n[FAULT] access violation at host %p\n",
             er->ExceptionAddress);
+    print_host_symbol(er->ExceptionAddress);
     if (er->NumberParameters >= 2) {
         uintptr_t addr = (uintptr_t)er->ExceptionInformation[1];
         fprintf(stderr, "  %s address host 0x%p",
@@ -121,6 +152,37 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
     fprintf(stderr, "  guest regs: eax=%08X ecx=%08X edx=%08X ebx=%08X\n"
                     "              esp=%08X esi=%08X edi=%08X\n",
             g_eax, g_ecx, g_edx, g_ebx, g_esp, g_esi, g_edi);
+    /* Guest backtrace.
+     *
+     * Recompiled code faults as native code, so the host address in the report
+     * above names a generated C function and nothing more -- it does not say
+     * which guest function, and there is no guest program counter to consult.
+     * But every lifted call pushes its guest return address onto the guest
+     * stack before jumping, so the stack still holds the call chain. Scanning
+     * up from esp for values inside the code sections recovers it.
+     *
+     * ponytail: a scan, not a frame walk -- these are FPO frames with no
+     * reliable ebp chain, so there is nothing to walk. It over-reports (stale
+     * addresses from previous calls linger below esp) but it is enough to name
+     * the guest function, which is the whole question at a fault.
+     */
+    if (g_xbox_mem_offset && g_esp) {
+        const uint32_t *sp =
+            (const uint32_t *)((uintptr_t)g_xbox_mem_offset + g_esp);
+        int shown = 0, i;
+        fprintf(stderr, "  guest stack (return addresses, innermost first):\n");
+        for (i = 0; i < 256 && shown < 24; i++) {
+            uint32_t v = sp[i];
+            if (v > g_xbox_code_lo && v < g_xbox_code_hi) {
+                fprintf(stderr, "    [esp+%-4d] 0x%08X\n",
+                        i * 4, v);
+                shown++;
+            }
+        }
+        if (!shown)
+            fprintf(stderr, "    (none -- stack pointer is not in guest memory)\n");
+    }
+
     /* The heap free-list bucket the allocator was walking.
      *
      * sub_0059FC74 indexes buckets as [esi + edi*8 + 0x180], and an empty one
@@ -179,6 +241,11 @@ int main(int argc, char **argv)
     g_xbe_path = path;
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+    /* Load symbols up front rather than from inside the handler: at
+     * fault time the process is already in a bad way, and SymInitialize
+     * allocates. Failure is not fatal -- the handler just prints no name. */
+    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
+    SymInitialize(GetCurrentProcess(), NULL, TRUE);
     AddVectoredExceptionHandler(1, veh_handler);
 
     printf("=== Half-Life 2 (Xbox) - Static Recompilation ===\n");

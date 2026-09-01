@@ -23,6 +23,16 @@ if(HL2_ICALL_FEEDBACK)
     message(STATUS "ICALL target feedback: ON")
 endif()
 
+# ebx/esi/edi are callee-saved on x86 and live in globals here, so a lifted
+# function that skips its epilogue corrupts its *caller* and nothing crashes.
+# This makes every indirect call check them and name the offender. Costs three
+# compares per call; off by default.
+option(HL2_ABI_CHECK "Report functions that clobber callee-saved registers" OFF)
+if(HL2_ABI_CHECK)
+    add_compile_definitions(RECOMP_ABI_CHECK)
+    message(STATUS "Callee-saved register check: ON")
+endif()
+
 # ── xboxrecomp runtime libraries ──────────────────────────
 # Point this to your xboxrecomp checkout
 set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../xboxrecomp" CACHE PATH "Path to xboxrecomp toolkit")
