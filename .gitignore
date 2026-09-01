@@ -41,3 +41,10 @@ game/*.xz_
 
 # Reference source checkouts (clone them yourself, see README)
 ref/
+
+# Runtime output: HDD partition images (multi-GB), logs, save data
+saves/
+run.log
+run_err.log
+run_all.log
+xbox_kernel.log

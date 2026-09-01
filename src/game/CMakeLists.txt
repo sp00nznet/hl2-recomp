@@ -15,7 +15,10 @@ file(GLOB RECOMP_GEN_SOURCES
 # Game executable sources
 set(GAME_SOURCES
     main.c
-
+    # Per-game override hook, from templates/new-game. Unlike recomp_types.h
+    # this one is *meant* to be edited per title: it is where a function the
+    # lifter got wrong gets replaced by hand.
+    recomp/recomp_manual.c
     ${RECOMP_GEN_SOURCES}
 )
 

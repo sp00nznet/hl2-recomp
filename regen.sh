@@ -10,6 +10,14 @@
 #   disasm        rewrites functions.json from scratch, so every name applied by
 #                 a later step is lost and must be re-applied. ~30s for the
 #                 6 MB .text. Only re-run when tools/disasm or the seeds change.
+#                 Two seed files: game/rtti_seeds.json (static, regenerated
+#                 above) and config/seed_functions.json (runtime-observed,
+#                 committed). The second comes from tools.seed_from_log: the
+#                 routine handed to PsCreateSystemThreadEx is only ever pushed
+#                 as an argument, so nothing calls it and no static pass finds
+#                 it. Without it the game thread never starts and the process
+#                 exits cleanly after two kernel calls -- which reads like a
+#                 successful run rather than zero progress.
 #   func_id       library-function identification (CRT, vtable thunks).
 #   abi_analysis  calling convention / params / return type. Without it every
 #                 function lifts as cdecl / 0 params / int-or-void and the
@@ -47,6 +55,7 @@ if [[ "${1:-}" == "--disasm" ]]; then
     (cd "$RECOMP" && py -3 -m tools.disasm "$XBE" \
         --analysis-json "$HL2/game/hl2_analysis.json" \
         --seed-functions "$HL2/game/rtti_seeds.json" \
+        --seed-functions "$HL2/config/seed_functions.json" \
         -o "$HL2/build/disasm" -v \
         | tr '\r' '\n' | grep -E "Realigned|Total functions|Reachable|Seeded")
 fi
