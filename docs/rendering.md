@@ -294,6 +294,56 @@ Note `0x772BA4` is *not* a string despite sitting among them: it is a function
 pointer (`0x005C0AE0`) in a callback table, which is worth saying because
 reading it as text is an easy mistake to make twice.
 
+## Where it stops now: guest memory wraps at 64 MB
+
+Static initialisation reaches **constructor 4,302 of 5,305 (81%)**, up from
+~55 at the start. What stops it is not lifting. It is the memory model.
+
+The runtime maps 64 MB and then maps 27 mirror views of it at 64 MB
+intervals, because real Xbox RAM wraps on a 26-bit address bus -- `0x04070000`
+reads the same bytes as `0x00070000`. So an allocation above the top of RAM
+does not get fresh pages. It gets low memory something else already owns:
+
+```
+0x04F80000 -> 0x00F80000    the base of the live heap
+0x05B80000 -> 0x01B80000    inside the heap (0x00F80000-0x04000000)
+0x0CB80000 -> 0x00B80000    a CUtlRBTree element array, aliasing static data
+```
+
+The consequence is a data structure that is correct when written and wrong
+when read, with nothing in between:
+
+```
+find  root=65535                        (empty tree)
+link  i=0 parent=65535 -> node0=[65535,65535]
+after rebalance:          node0=[65535,65535] root=0
+find  root=0 ...          node0=[0,0]   <- zeroed, with no write to it
+```
+
+A hardware write watchpoint on those four bytes reported no write in that
+window. That *is* the answer: nothing wrote through that address. The other
+owner of the aliased page did.
+
+A tree whose links read as zero makes node 0 its own child, so the next
+descent never terminates -- which is why the hang samples alternate between
+`CUtlRBTree::FindParent`, its comparator and `stricmp`.
+
+### Why the obvious fix does not work
+
+`xbox_SetTotalRam()` exists for titles needing more than the default. Both
+128 MB and 256 MB fault during CRT init, before a single constructor runs,
+because mirror stride and heap top both derive from that same number. The
+mapping size and the RAM reported to the guest are the same variable, and
+they need to stop being.
+
+Real hardware wraps *physical* addresses while translating virtual ones, so
+a 128 MB reserve maps to distinct pages and never collides. Modelling every
+guest address as physical is the gap. The bridge now warns when an
+allocation lands in mirrored space rather than letting it corrupt silently.
+
+`config/seed_functions.json` no longer needs its two comparator entries --
+the toolkit's `imm_ref_target` pass finds them statically now.
+
 ## 4. Assets have to load — and HL2's are behind an extra wrapper
 
 Unlike the other titles, HL2's data is not readable off the disc as-is.
