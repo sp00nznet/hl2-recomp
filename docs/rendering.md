@@ -122,6 +122,53 @@ failing through a NaN transform matrix.
 That is the value of the split — the same three causes will present identically
 on HL2, and now they are distinguishable in one run.
 
+## The boot chain, as far as it is understood
+
+Mapped by disassembly and confirmed against a run. Entry point is `0x0059C612`.
+
+```
+0x0059C612  entry
+  sub_0059C9E8              CRT _beginthreadex
+    PsCreateSystemThreadEx(routine=0x0059C950, ctx1=0x0059C59E)
+      sub_0059C950          TLS copy from template, SEH prologue
+        sub_0059C6DB        callback-list walk  <- Enter/Leave pair #1
+        call [ebp+8]        -> ctx1
+          sub_0059C59E      CRT thread init
+            sub_0059DF65    reads globals, no kernel calls
+            sub_0059D73E    calls HalRegisterShutdownNotification
+            sub_0059DED8, sub_0059DE80
+            sub_005969A0    startup timing + 7 calls to the Msg-alike
+              sub_005C0EA0  THE ENGINE: thiscall methods, string
+                            construction, vtable dispatch
+        sub_0059C6DB        callback-list walk  <- Enter/Leave pair #2
+      PsTerminateSystemThread
+```
+
+Two of these needed seeding before anything ran at all, and neither is
+findable statically: `0x0059C950` is only ever *pushed* as an argument, and
+`0x0059C59E` only reached through `[ebp+8]`. Both come from
+`tools.seed_from_log` and live in `config/seed_functions.json`.
+
+**Where it stops.** The thread runs and terminates after four kernel calls --
+two `RtlEnterCriticalSection`/`RtlLeaveCriticalSection` pairs, which are exactly
+the two `sub_0059C6DB` walks. Those walks *bracket* the indirect call, so
+execution provably passed through it, and there are zero
+`[ICALL] Failed to resolve` lines. So the game main is entered and returns
+early, having touched no bridged kernel call.
+
+`sub_0059C6DB` itself explains why the walks are silent: it iterates a circular
+list at `0x815B14` calling `[eax+8]` per entry, and an empty list means the body
+never runs. Enter, nothing, Leave.
+
+Note `sub_005969A0` is *not* the engine main despite being what the CRT calls --
+it is a timing report that tail-calls `sub_005C0EA0`, which is.
+
+Static reading cannot separate "returned early" from "never entered" past this
+point, so the next step is `tools.recomp --trace-functions` over the chain
+(`config/trace_boot.json`), which emits entry/exit for each. The answer decides
+between three unrelated fixes: a lifting bug in a CRT function, an engine-level
+early-out on state we have not set up, or a call-lowering problem.
+
 ## 4. Assets have to load — and HL2's are behind an extra wrapper
 
 Unlike the other titles, HL2's data is not readable off the disc as-is.
