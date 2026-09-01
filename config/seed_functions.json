@@ -18,5 +18,13 @@
  {
   "start": "0x0062264B",
   "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0001D0F8",
+  "note": "Unresolved indirect-call target, 104k calls into the static-init walk. Sits in the gap between sub_0001CF86 and 0x0001D10D and decodes as a complete 21-byte comparator: push [edx]; push [ecx]; call 0x005B00E7; setl cl; ret."
+ },
+ {
+  "start": "0x000618C1",
+  "note": "Unresolved indirect-call target from the same run. In a gap, and decodes as a complete thiscall constructor returning this: mov esi, ecx; call 0x002A2711; and [esi+0xC], 0; mov eax, esi; ret."
  }
 ]

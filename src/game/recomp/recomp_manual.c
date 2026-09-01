@@ -18,6 +18,7 @@
  *   - Intercept D3D/audio calls for custom rendering or sound
  */
 
+#include <windows.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -292,7 +293,8 @@ void sub_005AE3D0(void)
 #define INITTERM_CTOR_LO  0x007A3530u   /* the 5,305 C++ constructors */
 #define INITTERM_CTOR_HI  0x007A8818u
 
-static void initterm_call(uint32_t fn, uint32_t *ran, uint32_t *clobbered)
+static void initterm_call(uint32_t fn, uint32_t *ran,
+                          uint32_t *clobbered, uint32_t *faulted)
 {
     recomp_func_t f = recomp_lookup_manual(fn);
     uint32_t esi0, edi0, ebx0, esp0;
@@ -307,7 +309,26 @@ static void initterm_call(uint32_t fn, uint32_t *ran, uint32_t *clobbered)
     esi0 = g_esi; edi0 = g_edi; ebx0 = g_ebx; esp0 = g_esp;
     g_esp -= 4;
     MEM32(g_esp) = 0x0059DECEu;          /* guest return address */
-    f();
+    /* Survive a constructor that faults instead of stopping the walk.
+     *
+     * One bad constructor otherwise ends static initialisation, and every
+     * later one -- including whichever registers the filesystem interface --
+     * simply never runs. Continuing turns "it dies at #296" into a count of
+     * how many of the 5,305 are actually broken, which is the difference
+     * between one bug and a class of them. The guest state is re-established
+     * below either way, so a fault costs that constructor's side effects and
+     * nothing else.
+     *
+     * ponytail: __try is the whole recovery. Anything more (retry, quarantine,
+     * per-constructor rollback) is guesswork until the count says how bad it
+     * is.
+     */
+    __try {
+        f();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if ((*faulted)++ < 12)
+            fprintf(stderr, "[INITTERM] ctor 0x%08X faulted; continuing\n", fn);
+    }
     (*ran)++;
 
     if (g_esi != esi0 || g_edi != edi0 || g_ebx != ebx0 || g_esp != esp0) {
@@ -323,8 +344,8 @@ static void initterm_call(uint32_t fn, uint32_t *ran, uint32_t *clobbered)
     }
 }
 
-static void initterm_walk(uint32_t lo, uint32_t hi,
-                          uint32_t *ran, uint32_t *clobbered)
+static void initterm_walk(uint32_t lo, uint32_t hi, uint32_t *ran,
+                          uint32_t *clobbered, uint32_t *faulted)
 {
     /* RECOMP_TRACE_INITTERM prints each constructor before it runs, so a fault
      * inside one is attributable to a slot index rather than a bare host
@@ -342,25 +363,28 @@ static void initterm_walk(uint32_t lo, uint32_t hi,
                     *ran, p, fn);
             fflush(stderr);
         }
-        initterm_call(fn, ran, clobbered);
+        initterm_call(fn, ran, clobbered, faulted);
     }
 }
 
 void sub_0059DE80(void)
 {
     uint32_t esi0 = g_esi, edi0 = g_edi;
-    uint32_t ran = 0, clobbered = 0;
+    uint32_t ran = 0, clobbered = 0, faulted = 0;
     uint32_t hook = MEM32(0x00817648u);
 
     if (hook)
-        initterm_call(hook, &ran, &clobbered);
+        initterm_call(hook, &ran, &clobbered, &faulted);
 
-    initterm_walk(INITTERM_PRE_LO, INITTERM_PRE_HI, &ran, &clobbered);
+    initterm_walk(INITTERM_PRE_LO, INITTERM_PRE_HI,
+                  &ran, &clobbered, &faulted);
     ran = 0;
-    initterm_walk(INITTERM_CTOR_LO, INITTERM_CTOR_HI, &ran, &clobbered);
+    initterm_walk(INITTERM_CTOR_LO, INITTERM_CTOR_HI,
+                  &ran, &clobbered, &faulted);
 
-    fprintf(stderr, "[INITTERM] ran %u C++ constructors, %u clobbered "
-                    "callee-saved state\n", ran, clobbered);
+    fprintf(stderr, "[INITTERM] ran %u C++ constructors, "
+                    "%u clobbered callee-saved state, %u faulted\n",
+            ran, clobbered, faulted);
     fflush(stderr);
 
     g_esi = esi0;

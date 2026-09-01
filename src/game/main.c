@@ -127,12 +127,25 @@ static void print_host_symbol(void *addr)
         fprintf(stderr, "  in <no symbol; keep hl2.pdb beside the exe>\n");
 }
 
+static unsigned g_fault_reports;
+
 static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
 {
     const EXCEPTION_RECORD *er = ep->ExceptionRecord;
 
     if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
         return EXCEPTION_CONTINUE_SEARCH;
+
+    /* Cap the dumps. The static-init walk now continues past a constructor
+     * that faults, so a systematic problem produces thousands of these and
+     * the useful part -- the first few, and the final counts -- scrolls away.
+     * The handler still returns CONTINUE_SEARCH every time, so recovery is
+     * unaffected; only the printing stops. */
+    if (++g_fault_reports > 6) {
+        if (g_fault_reports == 7)
+            fprintf(stderr, "\n[FAULT] further faults not reported\n");
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
 
     fprintf(stderr, "\n[FAULT] access violation at host %p\n",
             er->ExceptionAddress);
