@@ -86,7 +86,16 @@ that title's paths. When it starts containing logic, that logic is upstream's.
 
 `xboxrecomp` should be able to reproduce any of these repos from the XBE alone.
 For HL2 that means `./regen.sh --disasm` regenerates every derived artefact —
+`build/hl2_analysis.json`, `build/rtti_seeds.json`, `build/rtti_names.json`,
 `build/rtti.json`, `build/disasm/`, `build/abi/`, `build/datamaps.json` and
-`src/game/recomp/gen/` — none of which are committed. The only things this repo
-stores are the inputs the toolkit cannot derive: documentation, `main.c`, the
-fixture, and the analysis JSON.
+`src/game/recomp/gen/` — none of which are committed.
+
+That is also the rule that keeps game data out of the repo, and the two
+requirements turn out to be the same one: **anything derived from the retail
+XBE is regenerable, so committing it is both redundant and wrong.** Addresses
+and Valve's class names are facts about a binary you must own a copy of; they
+belong in `build/`.
+
+The only things stored here are what the toolkit cannot derive: documentation,
+`main.c`, the golden fixture, and `config/seed_functions.json` — addresses a
+*run* discovered, which no static pass can find again.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate the recompiled C from hl2_xbox.xbe, in the one order that works.
 #
-#   xbe_parser    section layout -> game/hl2_analysis.json
+#   xbe_parser    section layout -> build/hl2_analysis.json
 #   rtti          MSVC RTTI -> classes/vtables + the seed list. Lives in the
 #                 toolkit, not here: nothing about it is HL2-specific. Must run
 #                 BEFORE disasm -- a vtable slot is proof of a function entry
@@ -10,7 +10,7 @@
 #   disasm        rewrites functions.json from scratch, so every name applied by
 #                 a later step is lost and must be re-applied. ~30s for the
 #                 6 MB .text. Only re-run when tools/disasm or the seeds change.
-#                 Two seed files: game/rtti_seeds.json (static, regenerated
+#                 Two seed files: build/rtti_seeds.json (static, regenerated
 #                 above) and config/seed_functions.json (runtime-observed,
 #                 committed). The second comes from tools.seed_from_log: the
 #                 routine handed to PsCreateSystemThreadEx is only ever pushed
@@ -45,16 +45,16 @@ fi
 if [[ "${1:-}" == "--disasm" ]]; then
     echo "==> xbe_parser"
     (cd "$RECOMP" && py -3 -m tools.xbe_parser "$XBE" \
-        --json "$HL2/game/hl2_analysis.json" --quiet)
+        --json "$HL2/build/hl2_analysis.json" --quiet)
 
     echo "==> rtti (seeds)"
     (cd "$RECOMP" && py -3 -m tools.rtti "$XBE" \
-        -o "$HL2/build/rtti.json" --seeds "$HL2/game/rtti_seeds.json")
+        -o "$HL2/build/rtti.json" --seeds "$HL2/build/rtti_seeds.json")
 
     echo "==> disasm"
     (cd "$RECOMP" && py -3 -m tools.disasm "$XBE" \
-        --analysis-json "$HL2/game/hl2_analysis.json" \
-        --seed-functions "$HL2/game/rtti_seeds.json" \
+        --analysis-json "$HL2/build/hl2_analysis.json" \
+        --seed-functions "$HL2/build/rtti_seeds.json" \
         --seed-functions "$HL2/config/seed_functions.json" \
         -o "$HL2/build/disasm" -v \
         | tr '\r' '\n' | grep -E "Realigned|Total functions|Reachable|Seeded")
@@ -74,7 +74,7 @@ echo "==> abi_analysis"
     --output-dir "$HL2/build/abi" | tail -1)
 
 echo "==> datamaps"
-py -3 "$HL2/tools/datamaps.py" "$XBE" "$HL2/game/hl2_analysis.json" \
+py -3 "$HL2/tools/datamaps.py" "$XBE" "$HL2/build/hl2_analysis.json" \
     -o "$HL2/build/datamaps.json"
 
 echo "==> recomp"

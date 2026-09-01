@@ -10,7 +10,7 @@ The datamap_t headers live in BSS and are filled in at runtime, so the class
 name <-> table link is only visible as a pair of immediates in the .text
 initialiser. We find it by scanning near each class-name reference.
 
-    py -3 tools/datamaps.py game/hl2_xbox.xbe game/hl2_analysis.json -o build/datamaps.json
+    py -3 tools/datamaps.py game/hl2_xbox.xbe build/hl2_analysis.json -o build/datamaps.json
     py -3 tools/datamaps.py --self-check
 """
 import argparse, collections, json, re, struct, sys
@@ -127,7 +127,7 @@ def recover(img, window=80):
 def self_check():
     """Assert facts verified by hand against the retail 2005-10-14 XBE."""
     root = Path(__file__).resolve().parent.parent
-    img = Image(root / "game/hl2_xbox.xbe", root / "game/hl2_analysis.json")
+    img = Image(root / "game/hl2_xbox.xbe", root / "build/hl2_analysis.json")
 
     # A run walked by hand: 19 CBaseAnimating-ish fields ending at m_pRagdoll.
     start, fields = table_at(img, 0x7AA064)
