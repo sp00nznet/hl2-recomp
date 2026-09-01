@@ -1,7 +1,0 @@
-=== Half-Life 2 (Xbox) - Static Recompilation ===
-XBE loaded: 8450048 bytes
-Xbox memory mapped at host offset 0x10000000
-MCPX APU: initialised
-Initializing kernel replacement...
-
-Starting game at entry point 0x0059C612...
