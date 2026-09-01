@@ -93,6 +93,35 @@ the title's own. It is not the game rendering itself, and it should not be
 reported as such, but it is the first thing on screen and it proves the surface
 address, pitch and format are right.
 
+### The executor now rasterises too
+
+`nv2a_pb_exec.c` fills triangles, strips, fans and quads flat into the guest
+framebuffer — but only batches whose attribute 0 is **already in screen space**,
+and that is measured (every vertex must land inside the surface) rather than
+assumed. Titles draw UI, HUD and 2D overlays pre-transformed, so that is the
+first geometry to appear. A batch needing a vertex program executed is counted
+as skipped rather than drawn somewhere wrong.
+
+Two switches exist because "nothing on screen" has three indistinguishable
+causes — wrong surface/pitch, broken rasteriser, empty vertex buffers:
+
+| Variable | What it does |
+|---|---|
+| `RECOMP_RASTER_TEST=1` | draw one known triangle after every clear |
+| `RECOMP_FB_DUMP=<prefix>` | write the surface to `<prefix>000.bmp` |
+
+**Proven on Wreckless.** The self-test triangle rasterises correctly at 640x480
+into a 2 bpp surface and dumps to a BMP you can open. Its own batches decode
+correctly too — prim 5, 6 indices, attribute 0 float, size 2, stride 16, at
+`0x01956000` — but that buffer stays all zeros, and `RECOMP_FIND_QUAD=1` reports
+the vertices are "not in RAM in that form" anywhere. So the rasteriser and the
+surface are right, and Wreckless's remaining blocker is that its engine never
+computes the geometry: the chain its README documents, from `DirectSoundCreate`
+failing through a NaN transform matrix.
+
+That is the value of the split — the same three causes will present identically
+on HL2, and now they are distinguishable in one run.
+
 ## 4. Assets have to load — and HL2's are behind an extra wrapper
 
 Unlike the other titles, HL2's data is not readable off the disc as-is.
@@ -105,8 +134,24 @@ first, renaming as it goes:
 "D:\GameMedia\zip0_xbox_%.xz_"    "Z:\hl2\hl2x\zip0_xbox_%.xzp"
 ```
 
-So the game opens `Z:\hl2\hl2x\*.xzp`, never the disc path, and the file layer
-has to present that.
+But `install.txt` is what the *loader* does, not what the game asks for. The
+format strings in `hl2_xbox.xbe` are the authority, and they say more:
+
+```
+D:/GameMedia/maps/%s.bsp      <- maps come straight off the disc
+zip%i_xbox%s.xzp              <- the archive name pattern
+T:/hl2/hl2x/%s%s              T:/cfg/%s      T:/HL2/      Z:/HL2/
+```
+
+Two consequences. `D:` maps to `<game_dir>`, so **map loading needs no unwrapping
+at all** — the ~120 BSPs are uncompressed on the disc and already in place. And
+the game reads its packages from `T:` as well as `Z:`, which in the runtime's
+path layer (`kernel_path.c`) are `<save_dir>/TitleData/` and `<save_dir>/Cache/`
+respectively. So the XZP has to land at `saves/Cache/hl2/hl2x/` or
+`saves/TitleData/hl2/hl2x/`, not next to the disc files.
+
+There are no absolute drive paths in the binary — Source composes them at
+runtime from a root — so these format strings are the only statement of intent.
 
 The `.xz_` files are **not** XZP archives with a different extension. The header
 is:
