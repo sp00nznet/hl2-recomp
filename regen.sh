@@ -86,13 +86,30 @@ echo "==> datamaps"
 py -3 "$HL2/tools/datamaps.py" "$XBE" "$HL2/build/hl2_analysis.json" \
     -o "$HL2/build/datamaps.json"
 
+# Entry tracing for bring-up:
+#   TRACE_FUNCS=config/trace_functions.json ./regen.sh
+# emits RECOMP_TRACE_ENTER for the listed addresses, which answers "which
+# call in this init chain never returns" without hand-reading each callee.
 echo "==> recomp"
+# A failed step used to leave the previous run's generated C in place and
+# still report success: the pipe to grep replaced the exit status. Building on
+# stale gen/ is the worst failure mode this script has, because everything
+# downstream looks fine. Capture the status, and stop.
 (cd "$RECOMP" && py -3 -m tools.recomp "$XBE" --all --split 1000 \
     --disasm-dir  "$HL2/build/disasm" \
     --func-id-dir "$HL2/build/func_id" \
     --abi-dir     "$HL2/build/abi" \
     --exclude-manual "$HL2/src/game/recomp/recomp_manual.c" \
+    ${TRACE_FUNCS:+--trace-functions "$TRACE_FUNCS"} \
     --gen-dir     "$HL2/src/game/recomp/gen" \
-    -o "$HL2/build/recomp" | grep -aE "unresolved|functions \(|Complete")
+    -o "$HL2/build/recomp"
+) > "$HL2/build/recomp.log" 2>&1
+recomp_status=$?
+grep -aE "unresolved|functions \(|Complete" "$HL2/build/recomp.log" || true
+if [ $recomp_status -ne 0 ]; then
+    echo "!! recomp failed (status $recomp_status) -- gen/ is now STALE" >&2
+    tail -25 "$HL2/build/recomp.log" >&2
+    exit $recomp_status
+fi
 
 echo "==> done. Now: cmake --build build-msvc --config Release"

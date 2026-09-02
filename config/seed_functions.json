@@ -34,5 +34,9 @@
  {
   "start": "0x005B21FB",
   "note": "Thread start routine, observed as PsCreateSystemThreadEx ctx1 on the run that completes static init. Lands inside sub_005B21F1 rather than at its start, so _pass_seed_aliases turns it into an alias; no static pass can find it, because the address only exists as an argument passed at runtime."
+ },
+ {
+  "start": "0x0042F1A0",
+  "note": "Unresolved indirect-call target on the run where D3D device creation first succeeds. Sits in the gap between sub_0042F190 and 0x0042F3A0, and decodes as a complete function: loads the interfaces at 0x009343D4 and 0x009353D4, saves esi/edi, then dispatches a run of virtual calls. Reached only through a vtable slot, so no static pass finds it."
  }
 ]

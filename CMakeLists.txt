@@ -40,3 +40,8 @@ add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 
 # ── Recompiled game executable ─────────────────────────────
 add_subdirectory(src/game)
+
+# The disc's installer, recompiled: it decompresses the .xz_ archives the
+# game expects to find already decompressed. Separate image, separate
+# executable -- see src/loader/main.c.
+add_subdirectory(src/loader)

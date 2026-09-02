@@ -101,3 +101,131 @@ belong in `build/`.
 The only things stored here are what the toolkit cannot derive: documentation,
 `main.c`, the golden fixture, and `config/seed_functions.json` — addresses a
 *run* discovered, which no static pass can find again.
+
+## Case study: the indirect-call `esp` recovery
+
+`RECOMP_ICALL_SAFE` restores `g_esp` to a saved value when a target fails to
+resolve, so a failed stdcall does not leak its arguments. That saved value is
+chosen by `_fixup_icall_esp_save` in `tools/recomp/translator.py`, which walked
+backwards from the call absorbing every `PUSH32` it met and stepping over
+interleaved computation.
+
+At `0x005A1731` HL2 does this:
+
+```
+push ebx                  ; callee-saved register save
+mov  ebx, [esp+0x14]
+push esi                  ; callee-saved register save
+lea  edx, [esp+0x14]
+mov  ecx, ebx
+call eax                  ; arguments in ecx/edx -- nothing on the stack
+```
+
+Both pushes are `sub_005A1700`'s own register saves, and the call takes no
+stack arguments at all. The scan absorbed both, so the failure path rewound
+`g_esp` over them, and the epilogue's `pop esi; pop ebx; pop edi` then read 8
+bytes too high -- `edi` landed on the return address and a float landed in the
+caller's `esi`. Three frames up, a `CUtlRBTree` method received a `this` of
+`0x41976D79`.
+
+The first rule I tried -- "a push of a callee-saved register the function also
+pops is a save" -- fixed this and immediately broke its mirror image at
+`0x00135265`:
+
+```
+push edi                  ; prologue save
+...
+push edi                  ; argument to the virtual call
+mov  ecx, esi
+call [eax+0x68]
+pop  edi                  ; epilogue restore
+```
+
+Here the pushed `edi` really is an argument, and the function pops `edi` too,
+so the rule stopped the run early, left the argument on the stack and shifted
+the epilogue the other way -- `esi` and `edi` came back swapped.
+
+What separates the two is the **push and pop counts**. A register popped at
+least as often as it is pushed is restored on every path out, so a push of it
+is a save and the run ends there. A register pushed more often than popped has
+a push nobody restores -- an argument -- and the run absorbs it;
+`sub_00135265` pushes `edi` twice and pops it once.
+
+The comparison is `pops >= pushes`, not equality, and the difference is not
+cosmetic: `sub_005A1700` has two epilogues, so it pops `ebx` twice against a
+single push. Written as equality the rule silently reverted that function to
+the original broken placement, and the regression test only caught it after it
+was rewritten with a second return path -- a reminder that a test for a
+frame-shape rule has to model more than one way out of the function.
+
+Where even that is ambiguous, stopping early is the safer error, an asymmetry
+worth stating because it decides the default whenever the cases cannot be told
+apart:
+
+- Stopping too early **under-rewinds**: the failed call leaks stack, `esp`
+  comes back low, and the existing `esp >= entry + 4` invariant reports it.
+- Stopping too late **over-rewinds**: the caller's saved registers are
+  silently wrong, and the damage shows up somewhere else entirely.
+
+So when in doubt, absorb less. This is general -- it is a fact about x86
+frames, not about HL2 -- so it belongs in the toolkit, and three regression
+tests in `tools/recomp/test_call_retaddr.py` pin all three shapes: the save,
+the argument, and the register that is both.
+
+It is still a heuristic. A function that pushes a register twice and pops it
+twice, one pair being an argument, will be read as two saves and under-rewind
+-- deliberately the detectable direction.
+
+### What made it findable
+
+The ABI check's `esp` invariant is deliberately one-sided, since a callee may
+legitimately pop its own arguments; it therefore cannot see a frame that comes
+back *too high*. Printing the signed `esp` delta alongside the last few
+indirect-call targets is what turned this from a wrong register into a
+one-line diagnosis: the newest target was `00000000`, which named the failure
+path directly.
+
+## Known issue: alias entries inherit the enclosing function's end
+
+A mid-function entry point (a vtable slot or a jumped-to label inside another
+function) is recorded as an *alias*: same end address as the function that
+contains it, so the generated body covers everything reachable from the alias
+start. That is right in principle -- flow from a mid-function entry really does
+continue into the rest of the function -- but the end is far too coarse
+wherever the enclosing "function" is itself a mis-detected blob.
+
+Measured on `hl2_xbox.xbe`:
+
+| | |
+|---|---|
+| alias functions | 5,741 of 48,334 (12%) |
+| bytes covered by aliases | 52.2 MB of 58.1 MB claimed (90%) |
+| median alias size | 5,206 bytes |
+| p90 alias size | 27,289 bytes |
+| largest alias | 43,195 bytes |
+| aliases sharing end `0x005DDA70` | 1,770 |
+
+`.text` is 6 MB, so 58 MB of "claimed" bytes is itself the overlap talking.
+The static-initialiser region is the worst case: thousands of tiny functions,
+each `push; push; mov ecx; call; ret`, get detected as one giant span with
+thousands of entry points, and every one of them then carries a body reaching
+to the far end of the blob.
+
+Two costs, one of them subtle:
+
+- **Codegen.** 14.9 M lines of C, most of it the same instructions emitted
+  once per alias, and a full build that takes tens of minutes.
+- **Attribution.** `called_by` counts every call inside the shared span for
+  every alias covering it. `sub_00595A30` (`InterfaceReg::InterfaceReg`)
+  reports 384 callers; it has **15**. That sent me looking for 369 static
+  initialisers that had never failed to run, on a boot path where the real
+  answer was elsewhere. A wrong xref is worse than a missing one.
+
+The fix is to end an alias at the first terminator actually reachable from its
+own start -- `engine.probes_as_returning_body()` already does that walk for the
+gap-target passes -- instead of inheriting the enclosing end. `sub_005C7A8F`
+would then be 58 bytes (it ends in `ret` at `0x005C7AC8`) rather than 13,798.
+
+Not done yet: it is a change to how every alias body is bounded, and worth
+making when it can be measured on its own rather than in the middle of a boot
+investigation.

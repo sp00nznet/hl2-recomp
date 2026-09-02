@@ -92,6 +92,10 @@ void sub_005ADC0B(void);
 void sub_000C6719(void);
 void sub_000C85E2(void);
 void sub_0031954D(void);
+void sub_00319BF7(void);
+void sub_000111E0(void);
+void sub_00596080(void);
+void sub_005960F0(void);
 void recomp_watch_guest_write(uint32_t guest_va);
 
 recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
@@ -124,6 +128,13 @@ recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
     if (xbox_va == 0x000C6719u) return sub_000C6719;   /* RBTree FindParent */
     if (xbox_va == 0x0031954Du) return sub_000C6719;   /* ... other instance */
     if (xbox_va == 0x000C85E2u) return sub_000C85E2;   /* RBTree LinkToParent */
+    if (xbox_va == 0x00319BF7u) return sub_00319BF7;   /* ... other instance */
+    if (xbox_va == 0x000111E0u) return sub_000111E0;   /* RBTree FirstInorder */
+
+    /* The engine's own spew sink -- see the body below for why it is a
+     * stub in the shipped image. */
+    if (xbox_va == 0x00596080u) return sub_00596080;   /* SpewOutputFunc */
+    if (xbox_va == 0x005960F0u) return sub_005960F0;   /* spew gate */
 
     return (recomp_func_t)0;
 }
@@ -198,6 +209,15 @@ void sub_005AD700(void)
 
     if (n)
         memmove((void *)XBOX_PTR(dest), (const void *)XBOX_PTR(src), n);
+
+    /* Large copies only: the tree buffer grows are 2 KB and up, and the
+     * question is whether CUtlMemory::Grow copies at all. */
+    if (n >= 1024 && getenv("RECOMP_TRACE_BIGCOPY")) {
+        static int big;
+        if (big++ < 40)
+            fprintf(stderr, "[MEMCPY] dst=0x%08X src=0x%08X n=%u\n",
+                    dest, src, n);
+    }
 
     if (getenv("RECOMP_TRACE_MEMCPY")) {
         static int shown;
@@ -287,6 +307,13 @@ void sub_005AE3D0(void)
     uint32_t dest = MEM32(g_esp + 4);
     uint32_t src  = MEM32(g_esp + 8);
     uint32_t n    = MEM32(g_esp + 12);
+
+    if (n >= 1024 && getenv("RECOMP_TRACE_BIGCOPY")) {
+        static int big;
+        if (big++ < 40)
+            fprintf(stderr, "[MEMMOVE] dst=0x%08X src=0x%08X n=%u\n",
+                    dest, src, n);
+    }
 
     if (n)
         memmove((void *)XBOX_PTR(dest), (const void *)XBOX_PTR(src), n);
@@ -489,6 +516,10 @@ void sub_005ADC0B(void)
  */
 #define RBTREE_INVALID 0xFFFFu
 
+/* Which rebalance the shared LinkToParent should call. Each template
+ * instantiation has its own copy at a different address. */
+static uint32_t g_rbtree_rebalance = 0x000C7F18u;
+
 static void call_guest(uint32_t fn, uint32_t guest_ret)
 {
     recomp_func_t f = recomp_lookup_manual(fn);
@@ -519,15 +550,48 @@ void sub_000C6719(void)
     MEM16(p_parent) = RBTREE_INVALID;
     MEM8(p_left) = 0;
 
+    /* Catch the moment a tree's element buffer moves.
+     *
+     * CUtlMemory::Grow reallocates and must carry the old contents across.
+     * Tree 0x0089C744 is well-formed at count=57 with one buffer and mostly
+     * zeroed at count=183 with another, so the copy is the suspect. Reporting
+     * the old and new pointer with a live-node count on either side pins it
+     * to a single grow instead of a range of them. */
+    {
+        static uint32_t last_tree, last_elems;
+        if (tree == last_tree && elements != last_elems) {
+            uint32_t count = MEM16(tree + 0x12), n, zero = 0;
+            for (n = 0; n < count; n++) {
+                uint32_t e = elements + n * 16;
+                if (MEM16(e) == 0 && MEM16(e + 2) == 0 && MEM16(e + 4) == 0)
+                    zero++;
+            }
+            /* And the buffer it came from. If the old one still holds the
+             * links, the copy simply never happened; if it is empty too,
+             * the data was destroyed before the grow. */
+            uint32_t oldzero = 0;
+            for (n = 0; n < count; n++) {
+                uint32_t e = last_elems + n * 16;
+                if (MEM16(e) == 0 && MEM16(e + 2) == 0 && MEM16(e + 4) == 0)
+                    oldzero++;
+            }
+            fprintf(stderr, "[RBTREE] tree 0x%08X elements moved 0x%08X -> 0x%08X, count=%u, new %u zeroed, old %u zeroed\n",
+                    tree, last_elems, elements, count, zero, oldzero);
+            fflush(stderr);
+        }
+        last_tree = tree; last_elems = elements;
+    }
+
     if (getenv("RECOMP_TRACE_RBTREE")) {
         static int shown;
-        if (shown++ < 20)
+        if (shown++ < 60)
             fprintf(stderr,
                     "[RBTREE] find  tree=0x%08X root=%u elems=0x%08X "
-                    "node%u=[%u,%u]\n",
+                    "node%u=[%u,%u] count=%u\n",
                     tree, (unsigned)idx, elements, (unsigned)idx,
                     elements ? (unsigned)MEM16(elements + idx * 16) : 0u,
-                    elements ? (unsigned)MEM16(elements + idx * 16 + 2) : 0u);
+                    elements ? (unsigned)MEM16(elements + idx * 16 + 2) : 0u,
+                    (unsigned)MEM16(tree + 0x12));
     }
 
     while (idx != RBTREE_INVALID) {
@@ -552,6 +616,41 @@ void sub_000C6719(void)
                             (unsigned)MEM16(tree + 0x16),
                             elements ? (unsigned)MEM16(elements) : 0u,
                             elements ? (unsigned)MEM16(elements + 2) : 0u);
+                /* The path that looped, with each node's links. A
+                 * rotation bug shows up as a parent/child pair that
+                 * disagree; an uninitialised node shows up as zeros. */
+                {
+                    unsigned k;
+                    for (k = 0; k < depth && k < 8; k++) {
+                        uint32_t n = elements + seen[k] * 16;
+                        fprintf(stderr,
+                                "           path[%u] node %-5u L=%-5u R=%-5u P=%-5u tag=%u\n",
+                                k, (unsigned)seen[k],
+                                (unsigned)MEM16(n),
+                                (unsigned)MEM16(n + 2),
+                                (unsigned)MEM16(n + 4),
+                                (unsigned)MEM16(n + 6));
+                    }
+                }
+                /* Where does the live data stop? If a grow copied a
+                 * short prefix, every node past that point reads as
+                 * all-zero links -- which is a cycle, since 0 is a
+                 * valid index. Counting them separates a bad copy from
+                 * a bad rotation. */
+                {
+                    uint32_t count = MEM16(tree + 0x12), n, zero = 0;
+                    int first_zero = -1;
+                    for (n = 0; n < count; n++) {
+                        uint32_t e = elements + n * 16;
+                        if (MEM16(e) == 0 && MEM16(e + 2) == 0 &&
+                            MEM16(e + 4) == 0) {
+                            if (first_zero < 0) first_zero = (int)n;
+                            zero++;
+                        }
+                    }
+                    fprintf(stderr, "           %u of %u nodes have all-zero links, first at %d\n",
+                            zero, count, first_zero);
+                }
                 fflush(stderr);
                 idx = RBTREE_INVALID;
                 break;
@@ -633,7 +732,7 @@ void sub_000C85E2(void)
     g_esp -= 4;
     MEM32(g_esp) = i;
     g_ecx = tree;
-    call_guest(0x000C7F18u, 0x000C8637u);
+    call_guest(g_rbtree_rebalance, 0x000C8637u);
 
     /* Arm a hardware watchpoint on the links we just wrote. They are
      * correct here and zero by the next search, and reading candidate
@@ -664,4 +763,172 @@ void sub_000C85E2(void)
 void sub_0031954D(void)
 {
     sub_000C6719();
+}
+
+/* The second instantiation's LinkToParent.
+ *
+ * Bound to the same native body as the first, to test where the corruption
+ * comes from: tree 0x0085523C goes through the native version and is clean,
+ * while tree 0x0089C744 goes through this lifted one and ends up with 176 of
+ * its 183 nodes holding all-zero links. The two lifted functions are
+ * structurally identical, so running the same C for both says whether the
+ * fault is in this function or further up in NewNode and the grow.
+ *
+ * The rebalance address differs between instantiations, so the shared body
+ * takes it as state rather than hardcoding one.
+ */
+void sub_00319BF7(void)
+{
+    g_rbtree_rebalance = 0x003199E9u;
+    sub_000C85E2();
+    g_rbtree_rebalance = 0x000C7F18u;
+}
+
+/* sub_000111E0 -- CUtlRBTree::FirstInorder, implemented natively.
+ *
+ * thiscall: ecx = tree, returns the leftmost node index in AX.
+ *
+ * It descends i = Left(i) until Left(i) is INVALID, calling nothing. That is
+ * why a cyclic Left chain shows up as a thread pegged at 100% with zero
+ * indirect calls -- there is no dispatch in the loop to count. The lifted
+ * version is faithful; a tree whose links form a loop is not something it can
+ * defend against.
+ *
+ * Bounded and reported, the same trade as FindParent: a descent through a
+ * binary tree cannot exceed its node count, so passing that means the links
+ * are wrong, and saying which tree beats spinning silently.
+ */
+void sub_000111E0(void)
+{
+    uint32_t tree     = g_ecx;
+    uint32_t elements = MEM32(tree + 4);
+    uint32_t count    = MEM16(tree + 0x12);
+    uint32_t idx      = MEM16(tree + 0x10);
+    uint32_t steps    = 0;
+
+    while (idx != RBTREE_INVALID) {
+        uint32_t left = MEM16(elements + idx * 16);
+        if (left == RBTREE_INVALID)
+            break;
+        if (++steps > count + 2u) {
+            static int reported;
+            if (reported++ < 4)
+                fprintf(stderr,
+                        "[RBTREE] FirstInorder ran away on tree 0x%08X: "
+                        "elems=0x%08X root=%u count=%u, stopped at node %u\n",
+                        tree, elements, (unsigned)MEM16(tree + 0x10),
+                        count, idx);
+            /* Who passed this? The guest return address is on top of
+             * the stack at entry, and the caller chain below it says
+             * where a float ended up in ecx. */
+            {
+                unsigned k, shown = 0;
+                fprintf(stderr, "           called from:\n");
+                for (k = 0; k < 64 && shown < 8; k++) {
+                    uint32_t v = MEM32(g_esp + k * 4);
+                    if (v > 0x00011000u && v < 0x005F4A6Cu) {
+                        fprintf(stderr, "             [esp+%-3u] 0x%08X\n",
+                                k * 4, v);
+                        shown++;
+                    }
+                }
+            }
+            fflush(stderr);
+            break;
+        }
+        idx = left;
+    }
+
+    g_eax = (g_eax & 0xFFFF0000u) | (idx & 0xFFFFu);
+    g_esp += 4;                          /* ret */
+}
+
+/* ── the engine's own console ──────────────────────────────── */
+
+/*
+ * SpewRetval_t SpewOutputFunc(const char *pMsg)
+ *
+ * Retail ships this as a stub -- "mov eax, 0x80004005; ret 4" -- and neither
+ * of the two functions that would install a real sink (sub_005960C0 and
+ * sub_00596710) is ever called, so the shipped Xbox build discards every
+ * engine message. The gate at 0x0081598C ships as 1, which makes
+ * sub_00598650 return before it formats anything at all.
+ *
+ * Clearing that gate (see hl2_enable_engine_spew in main.c) and overriding
+ * this function gives the engine its voice back: every Msg/Warning/DevMsg the
+ * engine already knows how to format arrives here as a finished string. That
+ * is worth far more than any diagnostic written from outside, because it is
+ * the engine's own account of what it is doing.
+ *
+ * The caller formats into a stack buffer with _snprintf and then does
+ * "test eax,eax; jge" on the result, so 0 (SPEW_CONTINUE) is success.
+ */
+void sub_00596080(void)
+{
+    uint32_t msg = MEM32(g_esp + 4);
+
+    if (msg) {
+        /* Guest memory, so treat the terminator as advisory: copy at most a
+         * buffer's worth and stop at the first NUL. The engine's own format
+         * buffer is 0x100 bytes at one call site and 0x400 at the other. */
+        char line[1024];
+        size_t i = 0;
+        while (i < sizeof(line) - 1) {
+            char c = (char)MEM8(msg + (uint32_t)i);
+            if (!c)
+                break;
+            line[i++] = c;
+        }
+        line[i] = '\0';
+        /* The engine embeds its own newlines; do not add one. */
+        fputs(line, stderr);
+        fflush(stderr);
+    }
+
+    g_eax = 0;      /* SPEW_CONTINUE */
+    g_esp += 8;     /* ret 4: the return address and the argument */
+}
+
+/*
+ * bool IsSpewSuppressed(void)  -- "mov al, [0x0081598C]; ret"
+ *
+ * sub_00598650 calls this first and returns immediately when it is true, so
+ * this one byte decides whether the engine says anything at all. It ships as
+ * 1, and poking it before the entry point is not enough: it lives in .data,
+ * so a static initialiser can put it back while the 5,305 constructors run.
+ *
+ * Overriding the reader instead of chasing the writer makes that ordering
+ * irrelevant. The first call reports what the byte actually held, which is
+ * the evidence for whether anything was rewriting it.
+ */
+void sub_005960F0(void)
+{
+    static int reported;
+    static int force = -1;
+    uint8_t gate = MEM8(0x0081598Cu);
+
+    if (force < 0) {
+        const char *opt = getenv("HL2_SPEW");
+        force = (opt && opt[0] != '0') ? 1 : 0;
+    }
+
+    /* Who asks matters: sub_00598650 is only one of six callers, so a query
+     * alone does not prove Msg ran. The return address names the caller;
+     * 0x0059865B is the site inside sub_00598650, which is main's logger. */
+    if (reported++ < 16) {
+        fprintf(stderr, "[SPEW] query #%d from 0x%08X (gate=%u)\n",
+                reported, MEM32(g_esp), (unsigned)gate);
+        fflush(stderr);
+    }
+
+    /* Faithful by default. Forcing the gate open is opt-in because on Xbox
+     * the spew path does not reach a console: sub_00598650 hands the
+     * formatted line to XBX_SendRemoteCommand, which talks to the debug
+     * monitor. A retail image has no XBDM, so forcing it drives the engine
+     * into code that cannot complete -- boot stops at
+     * 'XBX_InitDebug: failed to register command processor' instead of
+     * running. The engine's usable output channel is DbgPrint, which the
+     * kernel bridge already surfaces as [GUEST]. */
+    g_eax = (g_eax & 0xFFFFFF00u) | (force ? 0u : (uint32_t)gate);
+    g_esp += 4;             /* ret */
 }

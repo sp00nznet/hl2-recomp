@@ -1,0 +1,62 @@
+[
+ {
+  "start": "0x0001E4D4",
+  "note": "Unresolved indirect-call target from a loader run. Decodes as a complete function (a struct copy loop over [esi+ecx*4+0x18])."
+ },
+ {
+  "start": "0x00023E80",
+  "note": "Unresolved indirect-call target; the first address of the loader's D3D section, and a clean 'mov eax,[esp+4]' entry."
+ },
+ {
+  "start": "0x00024330",
+  "note": "Unresolved indirect-call target in the loader's D3D section; 'push esi; mov esi,[0x34048]' is a normal prologue."
+ },
+ {
+  "start": "0x000246D0",
+  "note": "Unresolved indirect-call target in the loader's D3D section."
+ },
+ {
+  "start": "0x00025540",
+  "note": "Unresolved indirect-call target in the loader's D3D section."
+ },
+ {
+  "start": "0x00069538",
+  "note": "Tail-jump target of sub_0006A204, mid-function inside sub_00069508 (which ends 'ret 8'). Stubbed, so the tail jump returned without popping the caller's two arguments and left esp low -- which shifted the loader's object pointer and made its vtable read as null."
+ },
+ {
+  "start": "0x00020352",
+  "note": "Stubbed call target in the loader's .text."
+ },
+ {
+  "start": "0x000206CB",
+  "note": "Stubbed call target in the loader's .text."
+ },
+ {
+  "start": "0x00021AE2",
+  "note": "Stubbed call target in the loader's .text."
+ },
+ {
+  "start": "0x00021B9C",
+  "note": "Stubbed call target in the loader's .text."
+ },
+ {
+  "start": "0x00021B9F",
+  "note": "Stubbed call target in the loader's .text."
+ },
+ {
+  "start": "0x000226A6",
+  "note": "Stubbed call target in the loader's .text."
+ },
+ {
+  "start": "0x0003FE7F",
+  "note": "Stubbed call target in the loader's XMV section."
+ },
+ {
+  "start": "0x0004010A",
+  "note": "Stubbed call target in the loader's XMV section."
+ },
+ {
+  "start": "0x000775AF",
+  "note": "Stubbed call target in the loader's DOLBY section."
+ }
+]

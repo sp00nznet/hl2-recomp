@@ -19,6 +19,9 @@ bin/
 # Generated recompiled code -- 1.3M lines, reproducible from the XBE in ~30s
 # via regen.sh. Committing it would make every toolkit change an unreadable diff.
 src/game/recomp/gen/
+# The loader's generated C, same rule: derived from default.xbe, so it is
+# regenerable (./regen_loader.sh --disasm) and does not belong here.
+src/loader/recomp/gen/
 
 # Pipeline intermediates
 build/disasm/
