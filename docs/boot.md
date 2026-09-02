@@ -145,5 +145,48 @@ Driving the install without the loop does not avoid this -- the same wrong
 object is passed -- and calling the constructor directly is worse, because it
 skips the loader's CRT and faults immediately.
 
-So the remaining work is one frame-arithmetic bug in shared runtime code,
-which is worth fixing for the game as well.
+That frame-arithmetic bug turned out to be a disassembler one, now fixed
+upstream: the linear sweep drifts through XPP's zero padding and decodes
+001C950600558D at 0x00069533, swallowing the `push ebp` at 0x00069538 that
+sub_0006A204 tail-jumps to. The seed for it was rejected as
+"mid-instruction", the target stayed stubbed, and a stub returns without the
+callee's `ret 8` -- so esp walked off by 4 per call and the object pointer
+slid 8 bytes out from under its own vtable. Accepting a mid-instruction seed
+when it decodes as a prologue fixes it, and Half-Life 2 is unchanged by the
+rule (48,335 functions either way).
+
+With that and the loader's own GPU fence registered (its device global is
+0x00034048, the equivalent of the game's 0x0061EDE8), the loader runs its
+real attract loop and reaches video playback -- which never completes. That
+is where the loader route stands: everything up to and including the install
+scan works, and XMV is the remaining blocker. Removing the videos does not
+help; the stall persists with the files absent, so it is the subsystem rather
+than the file, and Title_Load.xmv is itself a copy target.
+
+## The xCmp container
+
+Reversed from the file, with `tools/xcmp.py` to walk and check it. Verified
+against zip0_xbox.xz_ (253 MB on disc, 434,653,523 bytes out):
+
+| | |
+|---|---|
+| header | 24 bytes: `'xCmp'`, version 1, uncompressed size, window 0x80000, field4 0x00390080, block 0x4000 |
+| record | `{ uint16 length; payload[length] }`, next at `+2+length` |
+| chunk | records pack until the next would cross a 512 KB boundary, then zero padding up to it; a length of 0 means padding |
+
+24 bytes is not a guess: it is what default.xbe's own header check reads
+(`sub_00011F10` reads 0x18 and compares the magic and version). The chunking
+explains the 512 KB window -- each chunk is independently decodable -- and
+every resume point in the file is exactly 0x80000-aligned. 483 chunks.
+
+One thing is not yet pinned down. Most payloads open with `'JC'` (0x434A) and
+a uint32 output size of 0x4000, which reads as a per-block sub-header; 12,241
+do, 4,354 do not, and among the latter are 47 records of exactly 0xC000
+bytes. Summing only the `'JC'` records lands 14,289 blocks short of the
+header's total, so how the rest declare their output size is still open.
+
+After that comes the payload itself, which is LZX: Huffman main/length/
+aligned trees, delta-coded lengths through a pretree, position slots for a
+512 KB window, and E8 translation. The header states the total output and the
+result has to begin with the XZP magic, so any implementation is checkable
+against two independent facts.
