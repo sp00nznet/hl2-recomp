@@ -769,6 +769,21 @@ int main(int argc, char **argv)
     xbox_Nv2aMirrorFence(0x0061EDE8u, 0x2Cu, 0x30u);
     hl2_start_framebuffer_dumps();
 
+    /* Hardware write watchpoint on one guest dword.
+     *
+     * Debug registers are per-thread, so this has to be armed on the thread
+     * that runs the guest -- which in INLINE mode is this one. Set
+     * HL2_WATCH_VA to the address whose writer you want named; the handler
+     * turns the faulting host RIP into a guest function.
+     *
+     * For a value that is written correctly and then becomes garbage, this
+     * is the only thing that answers "who else wrote here". */
+    {
+        const char *w = getenv("HL2_WATCH_VA");
+        if (w)
+            recomp_watch_guest_write((uint32_t)strtoul(w, NULL, 0));
+    }
+
     hl2_enable_engine_spew();
 
     if (getenv("HL2_GPU_TRACE")) {

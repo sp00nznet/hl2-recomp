@@ -450,21 +450,40 @@ disc, and the material system resolves real shaders for it
 (`LightmappedGeneric`, `WorldVertexTransition`). 19 MB of level content is read
 per load and there are no unresolved indirect calls left.
 
-Every map still ends in a fault during level load, and they are two distinct
-ones:
+Level load still ends in a fault, and the important thing about it is that it
+is **not in one place**. Four runs of `+map intro` gave three different
+functions:
 
-| Map | Faults in | What it is |
-|---|---|---|
-| `intro`, `credits` | `sub_003CB020` | an index into a 0x810-byte table at 0x008FC778 |
-| `d1_trainstation_01` | `sub_00371B10` | `CDispCollTree`, displacement collision |
+```
+sub_005B9EB0+0x14AC   eax=6F42582F  ebx=004BC073
+sub_005AC900+0x504    ecx=8DE77500
+sub_003CB020+0x96     ebx=885E28F8
+sub_005B9EB0+0x14AC
+```
 
-The first is the more tractable. `[this+0xC]` is used as a table index and
-holds roughly 1.1 million; both the object and the table are BSS, which the
-loader does zero, so the engine wrote that value itself. It is **identical on
-every run**, so it is a logic bug and not an uninitialised read -- worth
-knowing before hunting it, because the two want completely different
-approaches.
+and one run did not fault at all. That rules out the thing it first looked
+like -- a specific function mishandling a specific value -- and points at
+state that is already wrong by the time anything touches it.
 
-The framebuffer is still black and the pushbuffer's PUT pointer has not moved:
-nothing has been submitted to the GPU yet. That is expected while level load
-is still failing -- the engine has not reached the point of drawing the world.
+Two details narrow it. `eax=0x6F42582F` is the ASCII `/XBo`, and `ebx` in the
+same run is `0x004BC073`, an address inside the routine that formats
+`"vgui/XBox/BackgroundImages/%s"`. String bytes are being read where pointers
+belong, and the string is one that routine builds.
+
+What has been ruled out, so it is not re-tested:
+
+- **Not the value at `[this+0xC]`.** A hardware write watchpoint
+  (`HL2_WATCH_VA`) shows only the legitimate writer, `sub_003CB630`, and it
+  writes 0 or 1 as it should.
+- **Not symbol folding.** Release defaults to `/OPT:ICF` and this target has
+  49,000 functions, many byte-identical, so a folded symbol was a reasonable
+  suspicion. `/OPT:NOICF` does not change the reported symbol. It is kept
+  anyway -- a fault report that can name the wrong function undermines every
+  instrument built on it -- but it was not the cause.
+- **Not observable by printing.** Any `fprintf` in the path, and even two plain
+  stores to globals, makes the fault disappear. Instrumentation has to be
+  out-of-band: the watchpoint, or the registers the fault handler already
+  captures.
+
+The framebuffer is still black and the pushbuffer's PUT pointer has not moved.
+That is expected while level load is failing.

@@ -91,6 +91,20 @@ if(MSVC)
         /MAP
         /DEBUG
         /STACK:16777216
+        # Do not fold identical functions together.
+        #
+        # Release defaults to /OPT:ICF, and this target is 49,000 generated
+        # functions of which a great many are byte-identical -- one-line
+        # forwarders, vcall thunks, trivial accessors. ICF collapses them and
+        # the PDB then maps that one address to whichever name won, so a fault
+        # report names a function that had nothing to do with the crash. Every
+        # instrument built on the symbol -- the fault handler, the guest
+        # backtrace, the watchdog -- inherits the lie.
+        #
+        # Costs image size and nothing else; /OPT:REF still drops what is
+        # genuinely unreachable.
+        /OPT:NOICF
+        /OPT:REF
     )
 elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
     target_compile_options(hl2 PRIVATE
