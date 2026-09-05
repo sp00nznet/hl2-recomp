@@ -445,45 +445,49 @@ did.
 
 ### What is left
 
-The archives are installed and byte-verified, the engine loads a map off the
-disc, and the material system resolves real shaders for it
-(`LightmappedGeneric`, `WorldVertexTransition`). 19 MB of level content is read
-per load and there are no unresolved indirect calls left.
+Level load no longer crashes. Four runs of `+map intro` and the no-map path all
+complete with no faults, where before it was three different fault sites and
+none clean. Three things were wrong, and each had to be fixed before the next
+was visible:
 
-Level load still ends in a fault, and the important thing about it is that it
-is **not in one place**. Four runs of `+map intro` gave three different
-functions:
+| | |
+|---|---|
+| Critical sections were no-ops | `92d7458` |
+| `lock xadd` / `lock cmpxchg` lifted to TODO comments | `92d7458` |
+| One TIB, so every guest thread was the same thread to the CRT | `e35c8be` |
+
+All three were written when guest threads ran synchronously and were not
+revisited when the runtime began spawning real ones. The failure they produced
+looked like anything but locking: intermittent, a different function each run,
+registers holding fragments of strings where pointers belonged, and it vanished
+under any attempt to observe it -- an `fprintf`, or even two plain stores to
+globals. That last property is the tell. A bug that disappears when you look at
+it is a race, and the first thing to check is whether the title's own locks do
+anything.
+
+**The remaining blocker is a lock-order inversion**, and it is now named rather
+than guessed at:
 
 ```
-sub_005B9EB0+0x14AC   eax=6F42582F  ebx=004BC073
-sub_005AC900+0x504    ecx=8DE77500
-sub_003CB020+0x96     ebx=885E28F8
-sub_005B9EB0+0x14AC
+thread A holds CRT lock 19, wants lock 11
+thread B holds CRT lock 11, wants lock 19
 ```
 
-and one run did not fault at all. That rules out the thing it first looked
-like -- a specific function mishandling a specific value -- and points at
-state that is already wrong by the time anything touches it.
+Lock 11 is the file-descriptor table lock: `sub_005BE146` takes it and walks
+the 64 fd slots at `0x9AEFC0`. Streams map to `index + 16`, so lock 19 is the
+first file the title opened. That is `fclose`'s order (stream, then the fd
+table) against an fd-table walk's order (fd table, then streams).
 
-Two details narrow it. `eax=0x6F42582F` is the ASCII `/XBo`, and `ebx` in the
-same run is `0x004BC073`, an address inside the routine that formats
-`"vgui/XBox/BackgroundImages/%s"`. String bytes are being read where pointers
-belong, and the string is one that routine builds.
+What has been established, so it is not re-derived:
 
-What has been ruled out, so it is not re-tested:
+- **Not a leaked lock.** Enters and leaves balance to within the number held at
+  that instant -- 61,154 against 61,135 at the moment of the deadlock.
+- **Both threads are doing live file I/O**, neither is in CRT teardown. There
+  is no "worker thread returned" in the log.
+- **It needs both threads.** `RECOMP_WORKERS=inline` gives zero contention --
+  and zero progress, because this title's worker blocks waiting for requests
+  and never returns, so the switch is a bisecting tool rather than a way to
+  run.
 
-- **Not the value at `[this+0xC]`.** A hardware write watchpoint
-  (`HL2_WATCH_VA`) shows only the legitimate writer, `sub_003CB630`, and it
-  writes 0 or 1 as it should.
-- **Not symbol folding.** Release defaults to `/OPT:ICF` and this target has
-  49,000 functions, many byte-identical, so a folded symbol was a reasonable
-  suspicion. `/OPT:NOICF` does not change the reported symbol. It is kept
-  anyway -- a fault report that can name the wrong function undermines every
-  instrument built on it -- but it was not the cause.
-- **Not observable by printing.** Any `fprintf` in the path, and even two plain
-  stores to globals, makes the fault disappear. Instrumentation has to be
-  out-of-band: the watchpoint, or the registers the fault handler already
-  captures.
-
-The framebuffer is still black and the pushbuffer's PUT pointer has not moved.
-That is expected while level load is failing.
+The framebuffer is still black and PUT has not moved. The engine has not
+reached drawing the world, because level load stops at the deadlock.

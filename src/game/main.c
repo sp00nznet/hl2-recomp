@@ -769,6 +769,12 @@ int main(int argc, char **argv)
     xbox_Nv2aMirrorFence(0x0061EDE8u, 0x2Cu, 0x30u);
     hl2_start_framebuffer_dumps();
 
+    /* The CRT lock table, so a contended lock is named rather than pointed at.
+     * 0x00817A60 is _lock()'s table in this XBE: sub_005B316B indexes it as
+     * [0x817a60 + n*8]. 36 entries covers the fixed locks and the stream
+     * locks above them. */
+    xbox_SetCrtLockTable(0x00817A60u, 36);
+
     /* Hardware write watchpoint on one guest dword.
      *
      * Debug registers are per-thread, so this has to be armed on the thread
