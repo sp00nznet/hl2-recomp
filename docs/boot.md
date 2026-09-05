@@ -190,3 +190,57 @@ aligned trees, delta-coded lengths through a pretree, position slots for a
 512 KB window, and E8 translation. The header states the total output and the
 result has to begin with the XZP magic, so any implementation is checkable
 against two independent facts.
+
+## What the engine renders
+
+It reaches its own main loop. `CModAppSystemGroup::Main` is `sub_0040ED00`:
+
+```
+while (engine->GetQuitting() == 0)   ; [vtable+0x34], sub_0040F490
+    engine->Frame();                  ; [vtable+0x14], sub_0040F4E0
+```
+
+on the static `CEngine` at 0x008095E0 (RTTI-confirmed, base `IEngine`). Most
+iterations return early because the frame limiter says "not yet"; roughly
+1,650 in 100 seconds do real work, which is a sane rate rather than a spin.
+
+Each of those frames clears and flips. The command stream is real -- 1,457
+segments, 25,608 words, 295 distinct methods, none unrecognised by the
+scanner -- and includes `CLEAR_SURFACE`, `SET_COLOR_CLEAR_VALUE`,
+`SET_TRANSFORM_PROGRAM`, and depth/blend/cull state.
+
+**It issues no draw calls.** No `NV097_SET_BEGIN_END` (0x17FC) appears
+anywhere in the stream, no vertex data methods, and the executor counts
+`draws 0, 0 indices`. The engine is clearing to opaque black (0xFF000000) and
+presenting empty frames, because it has no materials to draw with.
+
+That the clear reaches the screen is not an assumption: `RECOMP_RASTER_TEST`
+draws one known triangle after each clear, and it lands in the window at
+exactly its own area -- 75,264 of 307,200 pixels for
+(320,72) (544,408) (96,408). Executor, surface addressing, framebuffer window:
+all working.
+
+### Addressing, which is what made this hard to see
+
+`NV097_SET_SURFACE_COLOR_OFFSET` and `AvSetDisplayMode` both report *physical*
+addresses. Guest VA and physical are the same number in this runtime, so
+reading them as VAs works until it does not: Half-Life 2's framebuffer is at
+physical 0x84000, which as a VA is inside the loaded image. The executor
+refused to write there (correctly), and the framebuffer window was displaying
+the game's own code as pixels. Both now resolve through XBOX_CONTIG_BASE,
+where MmAllocateContiguousMemory actually put the buffer.
+
+### On fabricated config files
+
+Empty stand-ins for `cfg/*.cfg` are worse than absent ones: the engine opens
+one, takes a garbage size from it, and issues a 16 MB read that ends in
+STATUS_END_OF_FILE. They also do not help -- the engine's behaviour is
+identical without them. Removed.
+
+### What is left
+
+Drawing needs materials, and materials are in the `.xzp` archives. The maps
+are not: 90 `VBSP` files sit uncompressed on the disc and can be staged
+directly. But a map without materials still has nothing to draw with, so the
+content pipeline -- xCmp/LZX -- remains the gate on seeing the game's own
+picture rather than the self-test's.

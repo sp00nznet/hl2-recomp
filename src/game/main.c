@@ -429,6 +429,68 @@ static void hang_watchdog_start(void)
                              (LPVOID)(uintptr_t)seconds, 0, NULL));
 }
 
+/* Write the guest framebuffer to a BMP.
+ *
+ * Not xbox_FramebufferDumpBmp: that dumps the window thread's converted copy,
+ * and the window thread only starts on AvSetDisplayMode -- which the engine
+ * reaches at about the moment a worker thread dies, so it has never been
+ * scheduled. Reading guest memory directly answers the question that matters:
+ * whether the engine drew anything before it stopped.
+ *
+ * Geometry from what AvSetDisplayMode reported -- 640x480, pitch 2560,
+ * framebuffer at 0x00084000. HL2_FB_DUMP names the file, HL2_FB_VA overrides
+ * the address.
+ */
+static void hl2_dump_framebuffer(const char *path)
+{
+    const char *va_env = getenv("HL2_FB_VA");
+    uint32_t va = va_env ? (uint32_t)strtoul(va_env, NULL, 0) : 0x00084000u;
+    const uint32_t w = 640, h = 480, pitch = 2560;
+    uint32_t row = (w * 3u + 3u) & ~3u;
+    uint32_t img = row * h, total = 54u + img, x, y;
+    uint8_t hdr[54], *line;
+    const uint8_t *base;
+    FILE *f;
+    unsigned long long nonzero = 0;
+
+    if (!g_xbox_mem_offset)
+        return;
+    base = (const uint8_t *)((uintptr_t)g_xbox_mem_offset + va);
+
+    f = fopen(path, "wb");
+    if (!f)
+        return;
+    memset(hdr, 0, sizeof(hdr));
+    hdr[0] = 'B'; hdr[1] = 'M';
+    memcpy(hdr + 2, &total, 4);
+    hdr[10] = 54; hdr[14] = 40;
+    memcpy(hdr + 18, &w, 4);
+    memcpy(hdr + 22, &h, 4);
+    hdr[26] = 1; hdr[28] = 24;
+    memcpy(hdr + 34, &img, 4);
+    fwrite(hdr, 1, sizeof(hdr), f);
+
+    line = (uint8_t *)calloc(1, row);
+    for (y = 0; y < h; y++) {
+        const uint32_t *src =
+            (const uint32_t *)(base + (size_t)(h - 1 - y) * pitch);
+        for (x = 0; x < w; x++) {
+            uint32_t px = src[x];
+            if (px & 0x00FFFFFFu)
+                nonzero++;
+            line[x * 3 + 0] = (uint8_t)(px & 0xFF);
+            line[x * 3 + 1] = (uint8_t)((px >> 8) & 0xFF);
+            line[x * 3 + 2] = (uint8_t)((px >> 16) & 0xFF);
+        }
+        fwrite(line, 1, row, f);
+    }
+    free(line);
+    fclose(f);
+    fprintf(stderr, "  [FB] wrote %s from guest 0x%08X: %llu of %u pixels non-black\n",
+            path, va, nonzero, w * h);
+    fflush(stderr);
+}
+
 static unsigned g_fault_reports;
 
 static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
@@ -459,6 +521,17 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
         if (g_fault_reports == 7)
             fprintf(stderr, "\n[FAULT] further faults not reported\n");
         return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    {
+        /* Capture what the engine had drawn before this fault, once. */
+        /* Every fault, not just the first: the first one lands before
+         * AvSetDisplayMode, so the framebuffer is still untouched. Letting
+         * later faults overwrite means the file holds the last state the
+         * engine reached. */
+        const char *fb = getenv("HL2_FB_DUMP");
+        if (fb)
+            hl2_dump_framebuffer(fb);
     }
 
     fprintf(stderr, "\n[FAULT] access violation at host %p\n",
