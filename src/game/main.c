@@ -654,7 +654,20 @@ int main(int argc, char **argv)
      * everything the guest is told about memory derive from
      * g_xbox_total_ram, which stays at 64 MB.
      */
-    xbox_SetMapSize(512u * 1024u * 1024u);
+    /* 1 GB, not 512 MB. The title's pure MEM_RESERVEs are 128 MB and then
+     * 200 MB -- PAGE_NOACCESS, address space it never intends to back -- and
+     * the heap serves the whole mapped range, so they come out of it. With a
+     * further 32 MB taken and a 208 MB request still to come, 512 MB runs out
+     * partway through content load: the allocation that failed was the buffer
+     * for a .res file, so the parse saw an empty buffer and every UI string
+     * came back blank.
+     *
+     * The heap cannot be a separate arena from the reserves -- that was tried,
+     * and the guest CRT's realloc then cannot find a block in the other arena,
+     * so a grown buffer comes back empty (see XBOX_HEAP_TOP). Giving the one
+     * allocator more room is the fix that stays inside the model.
+     */
+    xbox_SetMapSize(768u * 1024u * 1024u);
 
     if (!xbox_MemoryLayoutInit(xbe_data, xbe_size)) {
         fprintf(stderr, "Xbox memory layout init failed "

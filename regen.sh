@@ -112,4 +112,23 @@ if [ $recomp_status -ne 0 ]; then
     exit $recomp_status
 fi
 
+# Re-run CMake if the chunk count changed.
+#
+# src/game/CMakeLists.txt globs gen/*.c with CONFIGURE_DEPENDS, but that only
+# re-globs when CMake itself runs, and MSBuild builds from the project file it
+# already has. A recomp that produces one more chunk than last time therefore
+# builds without it, and the failure is a wall of unresolved externals naming
+# functions whose bodies are sitting right there in gen/. That is what
+# 49,172 functions did: recomp_0049.c was written, never compiled, and 161
+# symbols went missing.
+if [ -d "$HL2/build-msvc" ]; then
+    gen_count=$(ls "$HL2/src/game/recomp/gen"/recomp_[0-9]*.c 2>/dev/null | wc -l)
+    proj="$HL2/build-msvc/src/game/hl2.vcxproj"
+    proj_count=$(grep -c 'recomp_[0-9]*\.c' "$proj" 2>/dev/null || echo 0)
+    if [ "$gen_count" != "$proj_count" ]; then
+        echo "==> chunk count changed ($proj_count -> $gen_count), re-running cmake"
+        cmake -S "$HL2" -B "$HL2/build-msvc" > "$HL2/build/cmake_reconfig.log" 2>&1             || { echo "!! cmake reconfigure failed" >&2; tail -20 "$HL2/build/cmake_reconfig.log" >&2; exit 1; }
+    fi
+fi
+
 echo "==> done. Now: cmake --build build-msvc --config Release"

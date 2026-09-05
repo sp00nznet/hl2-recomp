@@ -181,7 +181,8 @@ Based on [xboxrecomp](https://github.com/sp00nznet/xboxrecomp).
 
 ### Key Directories
 - `game/` — extracted disc contents (git-ignored) and `hl2_analysis.json`
-- `tools/` — HL2-specific analysis (`rtti.py`, `datamaps.py`)
+- `tools/` — HL2-specific analysis (`rtti.py`, `datamaps.py`, `xcmp.py`,
+  `xzp_verify.py`, `install_hdd.sh`)
 - `build/` — pipeline output and CMake build tree (git-ignored)
 - `ref/` — reference source checkouts, clone yourself (git-ignored)
 - `src/game/recomp/gen/` — auto-generated C (git-ignored, rebuild via `regen.sh`)
@@ -193,7 +194,18 @@ Based on [xboxrecomp](https://github.com/sp00nznet/xboxrecomp).
 ./regen.sh              # skip disasm, re-run datamaps/func_id/recomp
 py -3 tools/rtti.py --self-check
 py -3 tools/datamaps.py --self-check
+py -3 tools/xcmp.py --self-check         # .xz_ container framing
+py -3 tools/xzp_verify.py --self-check   # decompressed .xzp integrity
 ```
+
+### Installing the disc archives
+```bash
+./tools/install_hdd.sh          # decompress .xz_ -> .xzp, then verify
+```
+Runs the console's own LZX out of the recompiled `default.xbe` rather than a
+reimplementation, then checks the result against itself: XZP stores many files
+twice, and the two copies must agree. Magic, footer and length all match even
+when the decompression is wrong, so that pair check is the one that counts.
 
 ## Prior Art
 - [chipsnapper/HL2-Xbox-research](https://github.com/chipsnapper/HL2-Xbox-research) — archived Apr 2023, map/material research

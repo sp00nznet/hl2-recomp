@@ -24,7 +24,11 @@ The test is one question: **would another Xbox title want this?**
 | `rtti → disasm` ordering | **upstream** — documented in `docs/technical/rtti-recovery.md` | The *reason* (a vtable slot is proof of an entry point) is general. |
 | `abi_analysis` in the pipeline | already upstream, was **missing from this repo's `regen.sh`** | A gap in this repo, not the toolkit. Wreckless had it; HL2 did not, and would have lifted 9,307 thiscall functions as cdecl. |
 | D3D8LTCG device-context map | upstream, `docs/technical/d3d8ltcg-device-context.md` | Mapped from Burnout 3, applies to HL2 unchanged — same XDK 1.0.5849. The *device address* is per-title and belongs here once found. |
-| xCompress (`.xz_`) unwrapping | **should go upstream when written** | It is a Microsoft container, not a Valve one; any Xbox title could ship one. See [rendering.md](rendering.md). |
+| xCompress (`.xz_`) unwrapping | `hl2/` -- **and nothing to upstream** | Solved without writing a decoder: the container framing is in `tools/xcmp.py`, and the LZX itself is `sub_0001CE74` out of the disc's own `default.xbe`, recompiled and called per block. That is the general lesson, not general code -- when the decompressor ships on the disc, recompiling it beats reimplementing it. See [boot.md](boot.md). |
+| `bt`/`bts` on memory as a bit string | **fixed upstream**, `5633c13` | The offset was masked to 31, which is right for a register bit base and folds a 256-bit map onto its first dword for a memory one. MSVC's `strpbrk`/`strspn`/`strcspn` are built on exactly that map, so `'?'` and `'_'` aliased and every path with an underscore looked like it held a wildcard. Nothing HL2-specific: it is the CRT. |
+| Forward `rep movs` as `memcpy` | **fixed upstream**, `0283b5a` | The hardware copies one element at a time, so an overlapping forward copy propagates -- which is how every LZ decompressor emits a run. `memcpy` is undefined there and a vectorised one reads ahead. Output kept its exact length and lost 165,448 bytes of content. Nothing target-specific: it is the instruction. |
+| Carry flag on branches after arithmetic | **fixed upstream**, `2bfb9e0` | `jb`/`jae` only read real flags after a `cmp`; after arithmetic they fell back to a `_flags` nobody assigns, so the branch was always false. MSVC bit readers (`add reg,reg` then `jae`) are built on it -- including the XCompress decoder above. |
+| `FscGetCacheSize` / `FscSetCacheSize` | **fixed upstream**, `195113e` | Unbridged, so a title that saves the filesystem cache size and restores it restored zero. Same commit stops the missing-bridge warning calling a genuine zero-argument function a stack corruption. |
 | NV2A pushbuffer execution | upstream, `src/kernel/nv2a_pb_exec.c` | The shared blocker for every title's first frame. Fix it once. |
 | `func_id` XDK section ranges | **fixed upstream** | Was a table of Burnout 3's VAs with no way to pass the real ones. See below. |
 | Generated-C banner title | **fixed upstream** | Every title's generated C said "Burnout 3: Takedown". Now read from the XBE certificate. |
@@ -229,3 +233,40 @@ would then be 58 bytes (it ends in `ret` at `0x005C7AC8`) rather than 13,798.
 Not done yet: it is a change to how every alias body is bounded, and worth
 making when it can be measured on its own rather than in the middle of a boot
 investigation.
+
+## Known issue: flags that die at a block boundary
+
+Fixed for the carry flag, still open for the rest. The lifter tracks which
+instruction last set the flags so a `jcc` can be lowered from real values, but
+that tracking resets at a label -- correctly, because which predecessor
+arrives is not known there. The fallback is a `_flags` variable that nothing
+ever assigns, so the branch is unconditionally false, and it compiles clean.
+
+The carry case was a boot blocker and is fixed (xboxrecomp `2bfb9e0`): `_cf`
+is a real variable, so it survives the boundary and `jb`/`jae` now read it.
+Measured over the 48,324 translated functions in `hl2_xbox.xbe` afterwards:
+
+| condition | count | why it is still stuck |
+|---|---|---|
+| `jo` | 64 | no overflow flag is modelled at all |
+| `je` / `jne` | 92 | needs ZF, which has no persistent variable |
+| `jbe` / `ja` | 43 | needs CF *and* ZF |
+| `jb` / `jae` | 10 | producer is `comiss` or `fcompi`, not integer arithmetic |
+| signed / parity | 20 | needs SF, OF, PF |
+
+229 branches, against 48,324 functions -- rare, but each one is silently
+always-false rather than merely imprecise.
+
+The shape of the fix is already visible in the carry case. The other
+producers also write persistent state: a `cmp` records `_fa`/`_fb`, and
+`comiss`/`fcompi` write `g_fp_cmp`. Both outlive the boundary exactly as `_cf`
+does. What is missing is knowing *which* producer the incoming edge used, so
+the fallback picks the right one. That is a predecessor walk: if every
+predecessor of a block ends in the same kind of flag setter -- which is the
+common case, a compare and its branch split only by a label -- the fallback is
+determined and can be lowered as if fused.
+
+Not attempted yet because it wants the real CFG rather than the linear pass
+the lifter makes today, and because none of the remaining 229 is known to be
+on a path that matters. The carry ones were: they were the whole XCompress
+decoder.

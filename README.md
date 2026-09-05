@@ -27,17 +27,80 @@ So a recovered function can often be traced: address to class name to the real
 
 ## Status
 
-Analysis phase. Nothing runs yet.
+It boots, runs the engine's own main loop, and streams its own content out of
+the disc archives. It does not yet put the game's picture on screen.
 
 | Step | State |
 |---|---|
 | XBE parsed | done — entry `0x0059C612`, 10 sections, 124 kernel imports |
-| RTTI recovery | done — `tools/rtti.py`, 2,336 classes / 2,932 vtables / 12,288 methods |
-| Disassembled | done — 41,223 functions, 2,044,960 instructions, 87.4% reachable |
-| Datamap recovery | done — `tools/datamaps.py`, 253 classes / 1,722 fields |
+| RTTI recovery | done — 2,336 classes / 2,932 vtables / 12,288 methods |
+| Disassembled | done — **49,172** functions, 90.7% of instructions reachable |
+| Datamap recovery | done — 253 classes / 1,722 fields |
 | SDK cross-reference | done — 84% of classes located in Source SDK 2013 |
-| func_id / codegen | not started |
-| Runtime bring-up | not started |
+| func_id / codegen | done — 49,161 of 49,172 translated, ~14.9 M lines of C |
+| Static initialisation | done — all 5,305 constructors run, none faulting |
+| Module factories | done — all 13 resolve; material system comes up |
+| Display | done — D3D device created, `AvSetDisplayMode` accepted, clears and flips |
+| Disc archives | done — decompressed and **byte-verified** (see below) |
+| Content load | partial — packs mount, materials and scripts stream out of them |
+| Menu / first frame | not yet — currently faults in the VGUI path |
+
+### What actually runs
+
+The engine reaches `CModAppSystemGroup::Main`, brings up its material system,
+creates a D3D device, sets a display mode and drives its own frame loop. Give
+it `-retail` and it selects the `Z:/HL2/` content root, mounts
+`zip0_xbox.xzp`, reads the 19,767-entry directory and pulls materials, sound
+scripts and resource files out of it. What it has not done yet is draw its own
+geometry — the remaining work is in VGUI and the menu.
+
+Command-line arguments reach the title the way the console's launcher passes
+them, through the launch-data page:
+
+```bash
+RECOMP_CMDLINE="-retail" ./bin/hl2.exe
+```
+
+### The disc archives
+
+The disc ships `.xz_`, the game reads `.xzp`, and `default.xbe` converts one to
+the other. Rather than reimplement LZX, **the loader is recompiled too and its
+own decompressor is called** — the console's code, doing the console's job:
+
+```bash
+./tools/install_hdd.sh
+```
+
+Verification matters more than it looks. An extraction can have the right
+magic, the right footer, the exact declared length and 19,842 plausible
+filenames and still be wrong — the first one had 165,448 zeroed bytes in it.
+XZP stores many files twice, so the archive checks against itself with no
+reference needed, and `install_hdd.sh` refuses to leave a bad extraction in
+place.
+
+### Fixes this target pushed upstream
+
+The point of a hard target is what it finds. Each of these was a silent
+miscompile in [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) affecting
+any title, found here because HL2 exercised it:
+
+- **Forward `rep movs` lowered to `memcpy`** — the hardware copies one element
+  at a time, so an overlapping forward copy propagates, which is how every LZ
+  decoder emits a run. Output kept its exact length and lost 165,448 bytes.
+- **`bt`/`bts` on memory masked the bit offset** — with a memory bit base the
+  offset indexes a bit *string*. Masking it folds MSVC's 256-bit `strpbrk` map
+  onto one dword, so `'?'` and `'_'` alias and every path with an underscore
+  looked like it held a wildcard.
+- **Carry flag dead after arithmetic** — `jb`/`jae` only read real flags after
+  a `cmp`; after arithmetic they fell back to a variable nothing assigns, so
+  the branch was always false. MSVC's bit readers are built on that shape.
+- **Tail calls did not end a function** — `ret` before int3 padding started a
+  new function, a `jmp` did not, so a real function was swallowed and indirect
+  calls into it were skipped rather than made. Found 837 more functions.
+- **Frames built by `__SEH_prolog`** were classified frameless, so they never
+  re-published their frame and `__finally` funclets ran against a dead one.
+- Plus `FscGetCacheSize`/`FscSetCacheSize`, `RtlCompareMemory`, the arity
+  of `NtWaitForMultipleObjectsEx`, `rdtsc`, and the AV pack encoding.
 
 ## Setup
 
@@ -56,6 +119,13 @@ git clone --depth 1 https://github.com/ValveSoftware/source-sdk-2013 ref/source-
 # 4. sanity-check the symbol recovery
 py -3 tools/rtti.py --self-check
 py -3 tools/datamaps.py --self-check
+py -3 tools/xcmp.py --self-check
+py -3 tools/xzp_verify.py --self-check
+
+# 5. build, install the archives, run
+cmake -S . -B build-msvc && cmake --build build-msvc --config Release
+./tools/install_hdd.sh
+RECOMP_CMDLINE="-retail" ./bin/hl2.exe
 ```
 
 Requires Python 3.10+ with `capstone`, Visual Studio 2022, CMake 3.20+, and an

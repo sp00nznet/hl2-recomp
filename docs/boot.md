@@ -165,31 +165,109 @@ than the file, and Title_Load.xmv is itself a copy target.
 
 ## The xCmp container
 
-Reversed from the file, with `tools/xcmp.py` to walk and check it. Verified
-against zip0_xbox.xz_ (253 MB on disc, 434,653,523 bytes out):
+Reversed from the file, then confirmed against the loader's own walker. The
+spec below is exact: it accounts for every byte of zip0_xbox.xz_ (253 MB on
+disc) and produces the 434,653,523 bytes the header claims, in 26,530 blocks.
+`tools/xcmp.py` walks and checks it.
 
 | | |
 |---|---|
 | header | 24 bytes: `'xCmp'`, version 1, uncompressed size, window 0x80000, field4 0x00390080, block 0x4000 |
 | record | `{ uint16 length; payload[length] }`, next at `+2+length` |
-| chunk | records pack until the next would cross a 512 KB boundary, then zero padding up to it; a length of 0 means padding |
+| chunk | one 0x80000 window, zero-padded at the end |
 
 24 bytes is not a guess: it is what default.xbe's own header check reads
-(`sub_00011F10` reads 0x18 and compares the magic and version). The chunking
-explains the 512 KB window -- each chunk is independently decodable -- and
-every resume point in the file is exactly 0x80000-aligned. 483 chunks.
+(`sub_00011F10` reads 0x18 and compares the magic and version).
 
-One thing is not yet pinned down. Most payloads open with `'JC'` (0x434A) and
-a uint32 output size of 0x4000, which reads as a per-block sub-header; 12,241
-do, 4,354 do not, and among the latter are 47 records of exactly 0xC000
-bytes. Summing only the `'JC'` records lands 14,289 blocks short of the
-header's total, so how the rest declare their output size is still open.
+The length field is a discriminator as much as a size, which is the part that
+resisted a read of the file alone:
 
-After that comes the payload itself, which is LZX: Huffman main/length/
-aligned trees, delta-coded lengths through a pretree, position slots for a
-512 KB window, and E8 translation. The header states the total output and the
-result has to begin with the XZP magic, so any implementation is checkable
-against two independent facts.
+| length | meaning |
+|---|---|
+| `0x0000` | padding. The rest of this chunk is zero; the next record is at the next window boundary. |
+| bit `0x8000` set | a **stored** block. The low 15 bits are its size, so the record is `2 + size` and the payload is already the output. |
+| anything else | a **compressed** block of `length` bytes, opening with a six-byte sub-header `{ uint16 0x434A, uint32 output size }`, then LZX. |
+
+Reading the file bottom-up nearly got there and then stalled, because the
+stored records all carry `0xC000` and taking that as a length walks 4 bytes
+off per block -- after which the framing never recovers. `sub_00011000`, which
+is the walker, settles it in nine lines:
+
+```
+len = *(uint16 *)src;
+if (len == 0)      break;                                 end of chunk
+if (len & 0x8000)  memcpy(dst, src + 2, len & 0x7fff);     stored
+else               dst += sub_0001CE74(src + 2, dst);      compressed
+```
+
+so `0xC000` is `0x8000 | 0x4000`: a stored block of one 16 KB block. In
+zip0_xbox.xz_, 25,894 blocks are compressed and 636 stored.
+
+Chunks are independently decodable -- LZX back-references never cross a
+window -- so the whole 414 MB never has to be resident. The largest chunk
+produces 3,735,552 bytes.
+
+### Decompressing with the console's own decoder
+
+No LZX implementation was written. `sub_0001CE74` is the block decoder, it is
+a pure function of `(src, dst)` touching no globals, and it is already
+recompiled along with the rest of default.xbe -- so the install runs it:
+
+```
+./tools/install_hdd.sh              # or:
+./bin/hl2_loader.exe --extract game/GameMedia/zip0_xbox.xz_                                 saves/Cache/hl2/hl2x/zip0_xbox.xzp
+```
+
+`--extract` maps the XBE (the decoder reads static tables out of its own
+`.rdata`), then feeds `sub_00011000` one chunk at a time with a 512 KB source
+buffer and an 8 MB destination. It does not need the loader to boot, which is
+what makes this route work while the attract loop is still stalled on XMV.
+
+The output begins with `piZx` and ends with the `xZfT` footer, at exactly the
+length the header states.
+
+**That is not sufficient verification, and believing it was cost a day.** The
+first extraction matched magic, footer and length exactly, listed 19,842
+plausible filenames, and was still wrong: 165,448 bytes in it were zeros where
+real bytes belonged, spread over 352 of the 26,530 blocks. Length is preserved
+by the bug, so every cheap check passed.
+
+What catches it is that the archive stores many files **twice** -- once in the
+preload block and once as a file -- so the two copies can be compared against
+each other with no external reference:
+
+```
+compared 390 duplicated files: 0 mismatching, 0 differing bytes
+```
+
+Before the fix that read 383 mismatching of 415. `tools/xcmp.py --self-check`
+covers the framing; this pair check is what covers the payload, and it is the
+one worth running after any change to the decoder.
+
+The cause was not in the container or the decoder at all. Forward `rep movs`
+was being lowered to `memcpy`, and the LZ run -- a match of distance 1 and
+length N, repeating one byte N times -- is precisely an overlapping forward
+copy whose destination reads what it has already written. `memcpy` is
+undefined there. Fixed upstream in `0283b5a`; see [upstreaming.md](upstreaming.md).
+
+**This took a toolkit fix to work at all.** `sub_0001CE74` is a bit reader:
+`add edx, edx` shifts the top bit into the carry and `jae` tests it. Carry
+conditions were only lowered when the flags came from a `cmp` -- after
+arithmetic they fell back to a `_flags` variable nothing ever assigns, so the
+branch was permanently false and the decoder read a garbage pointer on its
+first block. Three related gaps, all fixed upstream:
+
+- `jb`/`jae` after `add`/`sub`/`adc`/`sbb`/shifts now read `_cf`, which the
+  lifter already computed beside the write.
+- That rule runs *before* the per-mnemonic reconstructions, which compute CF
+  from the operands after the write and are therefore wrong whenever the
+  destination is also the source -- `add edx, edx` became `edx < edx`.
+- At a block boundary the flag tracking resets, since the predecessor is not
+  known. `_cf` survives that: it is a real variable, so the fallback reads it
+  rather than `_flags`.
+
+`_cf` is still only declared where something consumes it; the translator now
+recognises a carry-consuming branch as a consumer, not just `adc`/`sbb`.
 
 ## What the engine renders
 
@@ -237,10 +315,93 @@ one, takes a garbage size from it, and issues a 16 MB read that ends in
 STATUS_END_OF_FILE. They also do not help -- the engine's behaviour is
 identical without them. Removed.
 
+### The content path, end to end
+
+With the archives installed the engine's own search machinery came into view,
+and it turned out the last blocker was not content at all.
+
+**How the game names its content.** Three roots are registered, and the choice
+between the last two is a runtime flag:
+
+```
+mov  ecx, 0x76fac0   ; "R:/HL2/"     always
+mov  al,  [0x9aa324]
+test al, al
+mov  ecx, 0x76fab8   ; "T:/HL2/"     flag == 0
+je   .done
+mov  ecx, 0x76fab0   ; "Z:/HL2/"     flag != 0
+```
+
+`R:` is not a drive. Nothing in either XBE links `\\??\\R:`, and none is needed:
+`R:/HL2/` is a prefix HL2 registers with its own file layer, and
+`sub_00596B70` classifies a path by matching it against the registered
+prefixes before rewriting it onto the real root. So `r:\\hl2\\hl2x\\zip0_xbox.xzp`
+becomes `Z:\\HL2\\hl2x\\zip0_xbox.xzp`, which is exactly where
+`install.txt` puts it.
+
+The flag is set by a 64 MB memory check -- a retail console rather than a
+devkit -- or by `-retail` on the command line, alongside `-dev` and
+`-novxconsole`. `RECOMP_CMDLINE="-retail"` pins it, which is worth doing rather
+than depending on what this runtime reports for memory size.
+
+**Why it still found nothing.** The pack scan ran, built the right names, and
+rewrote them to the right root, yet no `.xzp` ever reached the file layer.
+`sub_0041E650` probes each candidate with the CRT's `stat`, and `stat` rejects
+a path containing a wildcard before it opens anything:
+
+```
+push 0x7714ac     ; "?*"
+push esi          ; the path
+call strpbrk
+test eax, eax
+jne  .enoent
+```
+
+`Z:\\HL2\\hl2x\\zip0_xbox.xzp` has no wildcard, and it was rejected anyway.
+MSVC's `strpbrk` is a 256-bit character map on the stack:
+
+```
+push 0 x8                  ; eight zero dwords
+bts  dword ptr [esp], eax  ; per character of the set
+bt   dword ptr [esp], eax  ; per character of the string
+jae  next
+```
+
+A memory bit base is a **bit string**: the operand addresses the byte holding
+bit 0 and the offset runs over the whole string, so the hardware takes the
+dword at `base + (offset/32)*4` and bit `offset%32`. The lifter masked the
+offset to 31 -- correct for a register bit base, where the offset really is
+modulo the operand size -- which folded all eight dwords onto the first. The
+map then aliased mod 32, and `'?'` (0x3F) set the very bit `'_'` (0x5F) tests.
+
+So every path with an underscore was "contains a wildcard". The archives are
+`zip0_xbox.xzp` and `zip0_xbox_english.xzp`. Paths without one -- the engine's
+`materials\\debug\\debugmrmwireframe.vmt` and friends -- opened normally, which
+is why this read as a content problem for so long rather than a string one.
+
+Fixed upstream in `5633c13`, both the standalone lift and the fused `bt`+`jcc`,
+since the testing loop is `bt [esp], eax` fused with the `jae` after it. An
+immediate offset really is limited to 0..31 of the addressed dword and keeps
+the simple form.
+
+Two smaller gaps came out of the same investigation, in `195113e`:
+`FscGetCacheSize`/`FscSetCacheSize` had no bridge, so a title that saves the
+cache size and restores it was restoring zero; and the missing-bridge warning
+could not tell a genuine zero-argument function from an ordinal nobody had
+written down, so it accused `FscGetCacheSize` of corrupting the stack when it
+was fine. That false alarm cost an hour of this investigation, which is reason
+enough to fix it.
+
 ### What is left
 
-Drawing needs materials, and materials are in the `.xzp` archives. The maps
-are not: 90 `VBSP` files sit uncompressed on the disc and can be staged
-directly. But a map without materials still has nothing to draw with, so the
-content pipeline -- xCmp/LZX -- remains the gate on seeing the game's own
-picture rather than the self-test's.
+The archives are installed and the pack probe now resolves to a real file:
+
+```
+saves/Cache/hl2/hl2x/zip0_xbox.xzp          434,653,523
+saves/Cache/hl2/hl2x/zip0_xbox_english.xzp  186,195,539
+```
+
+Maps are not in them: 90 `VBSP` files sit uncompressed on the disc and are read
+from `D:` directly, as the console does. There are no `background0N.bsp` -- the
+Xbox port's menu is 2D VGUI rather than a map behind a menu as on PC -- so the
+first picture does not wait on a level load.
