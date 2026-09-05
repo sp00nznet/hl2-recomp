@@ -392,16 +392,79 @@ written down, so it accused `FscGetCacheSize` of corrupting the stack when it
 was fine. That false alarm cost an hour of this investigation, which is reason
 enough to fix it.
 
+### Loading a level
+
+The engine's main loop runs whether or not there is anything to draw:
+`CModAppSystemGroup::Main` alternates `engine->GetQuitting()` (`sub_0040F490`)
+and `engine->Frame()` (`sub_0040F4E0`) indefinitely -- hundreds of millions of
+indirect calls in a two-minute run. A frozen-looking process here is not
+necessarily stuck; check the indirect-call counter before concluding it is.
+`RECOMP_WATCHDOG_SECS` prints the recent targets and answers it immediately.
+
+Telling it to load a level changes everything:
+
+```bash
+RECOMP_CMDLINE="-retail +map d1_trainstation_01" ./bin/hl2.exe
+```
+
+and the map opens **off the DVD**, exactly where the console reads it:
+
+```
+[PATH] \\Device\\CdRom0\\GameMedia\\maps\\d1_trainstation_01.bsp
+[FILE] -> 0x00000000
+```
+
+Nothing needs staging for this. `install.txt` copies only the archives and the
+logo video; the 90 `.bsp` files stay on the disc and are read from `D:`. An
+earlier attempt to hard-link 424 MB of them into the HDD path was solving a
+problem that does not exist.
+
+### The shape of the remaining work
+
+Each step into the level load has been the same failure, and it is worth
+naming because the symptom never looks like the cause: **an indirect call
+whose target is not a known function is skipped rather than made.** The call
+does not fault and nothing is logged at the call site; the callee simply does
+not run, `eax` keeps whatever it held, and the caller uses that as a return
+value. It surfaces later as a string used as a pointer, or a size, or a
+handle.
+
+The runtime does say so -- `[ICALL] Failed to resolve VA ...` -- and that line
+is the most useful single thing in the log. Three separate detection gaps have
+turned up this way, each one a different reason a real function was invisible:
+
+| Missed because | Fix |
+|---|---|
+| A tail call ended the function, and only `ret` was recognised before padding | `8977353` |
+| An MSVC vcall thunk ends in an indirect jump and never reaches a `ret` | `c8ab437` |
+| A function began immediately after a `ret` with no padding at all | `666ac54` |
+
+`config/seed_functions.json` exists for what no static pass can find, and has
+ten entries. Prefer a rule when the misses share a shape -- all three above
+did.
+
 ### What is left
 
-The archives are installed and the pack probe now resolves to a real file:
+The archives are installed and byte-verified, the engine loads a map off the
+disc, and the material system resolves real shaders for it
+(`LightmappedGeneric`, `WorldVertexTransition`). 19 MB of level content is read
+per load and there are no unresolved indirect calls left.
 
-```
-saves/Cache/hl2/hl2x/zip0_xbox.xzp          434,653,523
-saves/Cache/hl2/hl2x/zip0_xbox_english.xzp  186,195,539
-```
+Every map still ends in a fault during level load, and they are two distinct
+ones:
 
-Maps are not in them: 90 `VBSP` files sit uncompressed on the disc and are read
-from `D:` directly, as the console does. There are no `background0N.bsp` -- the
-Xbox port's menu is 2D VGUI rather than a map behind a menu as on PC -- so the
-first picture does not wait on a level load.
+| Map | Faults in | What it is |
+|---|---|---|
+| `intro`, `credits` | `sub_003CB020` | an index into a 0x810-byte table at 0x008FC778 |
+| `d1_trainstation_01` | `sub_00371B10` | `CDispCollTree`, displacement collision |
+
+The first is the more tractable. `[this+0xC]` is used as a table index and
+holds roughly 1.1 million; both the object and the table are BSS, which the
+loader does zero, so the engine wrote that value itself. It is **identical on
+every run**, so it is a logic bug and not an uninitialised read -- worth
+knowing before hunting it, because the two want completely different
+approaches.
+
+The framebuffer is still black and the pushbuffer's PUT pointer has not moved:
+nothing has been submitted to the GPU yet. That is expected while level load
+is still failing -- the engine has not reached the point of drawing the world.

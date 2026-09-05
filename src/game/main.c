@@ -491,6 +491,42 @@ static void hl2_dump_framebuffer(const char *path)
     fflush(stderr);
 }
 
+/* Dump the framebuffer on a timer, not only on a fault.
+ *
+ * The fault path was the only trigger, which was fine while there was always a
+ * fault. Now that the engine runs its loop to the end of the timeout, the
+ * question "did it draw anything" has no answer unless something asks
+ * periodically. HL2_FB_EVERY names the interval in seconds; the file is
+ * rewritten each time, so whenever the process is killed the last frame it
+ * managed is on disk.
+ *
+ * The address comes from AvSetDisplayMode rather than the 0x00084000 default,
+ * because the engine moves its framebuffer once it owns one.
+ */
+static DWORD WINAPI hl2_fb_dump_thread(LPVOID arg)
+{
+    const char *path = (const char *)arg;
+    const char *every = getenv("HL2_FB_EVERY");
+    unsigned secs = every ? (unsigned)strtoul(every, NULL, 0) : 10u;
+
+    if (secs == 0)
+        secs = 10;
+    for (;;) {
+        Sleep(secs * 1000u);
+        hl2_dump_framebuffer(path);
+    }
+    return 0;
+}
+
+static void hl2_start_framebuffer_dumps(void)
+{
+    const char *path = getenv("HL2_FB_DUMP");
+
+    if (!path || !getenv("HL2_FB_EVERY"))
+        return;
+    CreateThread(NULL, 0, hl2_fb_dump_thread, (LPVOID)path, 0, NULL);
+}
+
 static unsigned g_fault_reports;
 
 static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
@@ -731,6 +767,7 @@ int main(int argc, char **argv)
      * followed and bounds-checked fresh on every poll, so registering it
      * before the device exists is harmless. */
     xbox_Nv2aMirrorFence(0x0061EDE8u, 0x2Cu, 0x30u);
+    hl2_start_framebuffer_dumps();
 
     hl2_enable_engine_spew();
 
