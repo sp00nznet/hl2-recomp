@@ -465,29 +465,39 @@ globals. That last property is the tell. A bug that disappears when you look at
 it is a race, and the first thing to check is whether the title's own locks do
 anything.
 
-**The remaining blocker is a lock-order inversion**, and it is now named rather
-than guessed at:
+**The remaining blocker is a lock-order inversion**, traced to both call
+sites:
 
 ```
-thread A holds CRT lock 19, wants lock 11
-thread B holds CRT lock 11, wants lock 19
+main:   _lock(11) from 0x005BE16D  ->  _lock(19) from 0x005B0F0C
+worker: _lock(19) from 0x005B0F2B  ->  _lock(11) from 0x005BE16D
 ```
 
-Lock 11 is the file-descriptor table lock: `sub_005BE146` takes it and walks
-the 64 fd slots at `0x9AEFC0`. Streams map to `index + 16`, so lock 19 is the
-first file the title opened. That is `fclose`'s order (stream, then the fd
-table) against an fd-table walk's order (fd table, then streams).
+`0x005B0EF3` is `_lock_str(FILE *)`: it turns a `FILE *` into a stream index
+by `(ptr - _iob) / 32` and locks `16 + index`, so lock 19 is stream 3.
+`sub_005BE146` takes lock 11 and walks a 64-entry table at `0x9AEFC0`, which is
+the file-descriptor table. So one thread is on an open path (take the fd table,
+then the stream) and the other on a close path (take the stream, then the fd
+table), on the same stream.
 
-What has been established, so it is not re-derived:
+Established, so it is not re-derived:
 
 - **Not a leaked lock.** Enters and leaves balance to within the number held at
   that instant -- 61,154 against 61,135 at the moment of the deadlock.
-- **Both threads are doing live file I/O**, neither is in CRT teardown. There
-  is no "worker thread returned" in the log.
+- **Neither thread is in CRT teardown.** There is no "worker thread returned"
+  in the log; both are doing live file I/O.
 - **It needs both threads.** `RECOMP_WORKERS=inline` gives zero contention --
   and zero progress, because this title's worker blocks waiting for requests
-  and never returns, so the switch is a bisecting tool rather than a way to
-  run.
+  and never returns. That makes the switch a bisecting tool, not a way to run.
+- **Both threads really are blocked on critical sections.**
+  `RECOMP_HANG_WATCHDOG` samples every thread and shows them in
+  `ZwWaitForAlertByThreadId`, which is what a contended CRITICAL_SECTION waits
+  on.
+
+The tools to carry on with are in place: contended locks are named by CRT
+index rather than by a heap address that moves each run, and
+`RECOMP_HANG_WATCHDOG` gives a per-thread picture with CPU time, which
+separates a spin from a block.
 
 The framebuffer is still black and PUT has not moved. The engine has not
 reached drawing the world, because level load stops at the deadlock.
