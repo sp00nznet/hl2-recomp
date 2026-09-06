@@ -494,3 +494,40 @@ between this runtime and the console rather than explaining it.
 With the load complete the framebuffer is still black and the pushbuffer's PUT
 pointer has not moved, so the engine is not submitting draw commands. That is
 the next question, and it is a rendering one rather than a correctness one.
+
+## First pixels
+
+The engine was drawing the whole time. What looked like "PUT never moves" was
+me reading the wrong value: DMA_PUT advances every frame, and a survey of the
+stream it submits (`RECOMP_PB_SCAN=1`) is unambiguous about what it contains.
+
+```
+[PB] subch 0  method 0x17FC  x4634    SET_BEGIN_END
+[PB] subch 0  method 0x1800  x21288   ARRAY_ELEMENT16
+[PB] subch 0  method 0x0130  x123     SET_FLIP_READ
+```
+
+123 flips is 123 presented frames. Nothing was executing the stream.
+
+Turning the executor on (`RECOMP_PB_EXEC=1`) crashed the title, and the crash
+was the interesting part: a surface offset is a *physical* DMA-object offset,
+and the executor treated it as a guest VA. It only corrected for that when the
+offset would have landed on the loaded image -- and HL2's colour surface,
+physical 0x00A6C000, clears the image by 700 KB. So the executor cleared 1.2 MB
+of black through the guest heap and the title died several frames later on an
+overwritten pointer, while the real framebuffer in the contiguous window stayed
+untouched. Fixed upstream in `d238aff`; the test is now the contiguous arena's
+high-water mark, which is an exact answer rather than a guess about the image.
+
+With surface and vertex offsets both resolved:
+
+```
+2317 draws, 42576 indices, 27000 triangles rasterised, 0 faults
+x 0.0..467.0   y 125.0..285.0
+```
+
+Those are plausible screen coordinates, and the back buffer holds a correctly
+placed quad. It is white because this executor has no texturing -- it reports
+54,394 unhandled methods across 337 distinct ones, so what reaches the screen
+is geometry with no shading. Real frames mean driving the D3D8/GL backend from
+the stream rather than the bring-up rasteriser.
