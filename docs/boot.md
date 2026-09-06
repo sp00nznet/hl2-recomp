@@ -531,3 +531,34 @@ placed quad. It is white because this executor has no texturing -- it reports
 54,394 unhandled methods across 337 distinct ones, so what reaches the screen
 is geometry with no shading. Real frames mean driving the D3D8/GL backend from
 the stream rather than the bring-up rasteriser.
+
+## The loading screen
+
+Vertex decode was already correct once surface and vertex offsets were resolved
+as physical. What the stream describes is unambiguous:
+
+```
+prim 5, 6 indices, pos attr: off 0x811E5000 type 2 size 3 stride 24
+  attr0  type 2 size 3   float3 position
+  attr5  type 0 size 4   D3DCOLOR
+  attr7  type 2 size 2   float2 texcoord
+  v[0] = 0,0    v[1] = 640,0    v[2] = 640,480
+```
+
+12 + 4 + 8 = 24, so the stride confirms the layout. These are screen-space
+quads: a 640x480 background, a 32x32 icon at (0,125), text bars from (173,187)
+to (467,195). It is the loading screen, drawn in 2D.
+
+Everything came out white for two reasons, both fixed upstream in `b935f11`.
+`fetch_attr` had no case for NV2A format 0, D3DCOLOR -- a DWORD 0xAARRGGBB
+whose little-endian bytes run B,G,R,A, the reverse of every other format it
+handled. The fetch failed and the caller's white fallback took over, which
+looks exactly like a title asking for white. And the colour was read from slot
+3, diffuse by convention; HL2 puts it in slot 5, so the lookup now prefers slot
+3 but falls back to finding a D3DCOLOR-formatted attribute, since that format
+is only ever a colour.
+
+The result is HL2's loading screen in its own colours: grey dialog panel, title
+bar, and the orange segmented progress bar. Text renders as solid blocks --
+glyphs are textured quads and this rasteriser does not sample textures. That is
+the next piece, and it belongs in the D3D11 translator rather than here.
