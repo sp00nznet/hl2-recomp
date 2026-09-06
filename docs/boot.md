@@ -562,3 +562,67 @@ The result is HL2's loading screen in its own colours: grey dialog panel, title
 bar, and the orange segmented progress bar. Text renders as solid blocks --
 glyphs are textured quads and this rasteriser does not sample textures. That is
 the next piece, and it belongs in the D3D11 translator rather than here.
+
+## The lock was never released
+
+`RECOMP_CS_MODE=single` had been carrying the level load, and the reason turned
+out to be one missed function boundary rather than anything about locking.
+
+Tracing every acquire and release by guest address made it obvious. Every CRT
+lock balanced except one:
+
+```
+41 drop 1    41 take 1
+41 drop 19   43 take 19
+ 0 drop 11   15 take 11      <- _OSFHND_LOCK
+```
+
+`sub_005BE146` is the CRT's `_lock` helper: it takes the lock inside a `__try`
+and releases it in the `__finally`. Its scan loop exits into two blocks that sit
+past the measured end of its body --
+
+```
+005BE244  cmp  dword ptr [ebp-0x1c], -1
+005BE248  jne  0x5be2a7          <- the __finally, which calls _unlock(11)
+005BE24A  inc  edi
+005BE24B  jmp  0x5be173          <- back into the loop
+```
+
+-- and neither was detected as a function, so both were emitted as stubs that
+pop a return address and return. The `__finally` never ran. Critical sections
+are recursive, so the thread holding it kept going and only the *second* thread
+to want the lock blocked, which is why this presented as an AB-BA deadlock
+between two locks rather than as one lock leaking.
+
+The orphan-recovery pass had rejected these blocks because it required them to
+reach a `ret`; one ends in `jmp`. Fixed upstream in `1ed528f`, along with
+registering where that jump lands -- otherwise the recovered block just ends in
+a call to another stub. Four extra function starts, three fewer stubs, and:
+
+```
+                      before          after
+default (real locks)  7.8 MB, deadlock   15.3 MB, 0 faults, 0 unresolved
+```
+
+The bypass is no longer needed to load a level.
+
+## Where it stops now
+
+`+map intro` loads to a plateau and stays there: I/O stops, the progress bar is
+byte-identical at 110 s and 240 s, and no kernel call is made after the last
+read. The engine keeps submitting pushbuffer work the whole time, so it is
+looping in the renderer while the load's stage machine does not advance.
+
+A real level gets further and fails honestly instead:
+
+```
+intro                620 reads, 13.8 MB, no fault, no progress
+d1_trainstation_01   722 reads, 19.0 MB, deterministic fault
+```
+
+The fault is in displacement collision: the caller chain runs through a
+function that owns `"CMod_LoadDispInfo: bad texinfo lump size!"` into
+`CDispCollTree` (RTTI-named), and the read is of guest 0x651BCD20 -- far
+outside the address space, so a garbage pointer rather than a small overrun.
+`intro` has little displacement terrain, which is why it stalls rather than
+crashes. Same fault site and same 722 reads on every run.

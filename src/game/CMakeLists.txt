@@ -30,6 +30,15 @@ set(GAME_SOURCES
 # Create console application (for debugging; switch to WIN32 for release)
 add_executable(hl2 ${GAME_SOURCES})
 
+# Opt-in ABI verification. Every indirect call checks that the callee
+# restored ebx/esi/edi/ebp; a violation names the function that broke the
+# contract, which is the only cheap way to find a corrupted frame -- the
+# fault it causes lands somewhere else entirely.
+option(HL2_ABI_CHECK "Verify callee-saved registers across indirect calls" OFF)
+if(HL2_ABI_CHECK)
+    target_compile_definitions(hl2 PRIVATE RECOMP_ABI_CHECK)
+endif()
+
 # Link compatibility layers
 target_link_libraries(hl2 PRIVATE
     xbox_kernel
