@@ -445,59 +445,52 @@ did.
 
 ### What is left
 
-Level load no longer crashes. Four runs of `+map intro` and the no-map path all
-complete with no faults, where before it was three different fault sites and
-none clean. Three things were wrong, and each had to be fixed before the next
-was visible:
+Every indirect call in a level load now resolves, and nothing faults:
 
-| | |
+```
+default (real locks)   3 runs: 0 faults, 0 unresolved calls
+RECOMP_CS_MODE=single     run: 0 faults, 0 unresolved, 14.3 MB of level content
+```
+
+Getting there took five separate detection fixes, all found through the same
+signal -- `[ICALL] Failed to resolve VA` -- and all invisible for a different
+reason:
+
+| Missed because | Fixed by |
 |---|---|
-| Critical sections were no-ops | `92d7458` |
-| `lock xadd` / `lock cmpxchg` lifted to TODO comments | `92d7458` |
-| One TIB, so every guest thread was the same thread to the CRT | `e35c8be` |
+| A tail call ended the function; only `ret` counted before padding | rule, `8977353` |
+| A vcall thunk ends in an indirect jump, never reaching a `ret` | rule, `c8ab437` |
+| A function began right after a `ret` with no padding | rule, `666ac54` |
+| Its frame is built by `__SEH_prolog`, so there is no prologue | rule, `025b69e` |
+| `mov <reg>, imm32; ret` -- a constant accessor with no frame at all | rule |
+| `mov ecx, imm32; call` -- a thiscall stub | **seed** |
 
-All three were written when guest threads ran synchronously and were not
-revisited when the runtime began spawning real ones. The failure they produced
-looked like anything but locking: intermittent, a different function each run,
-registers holding fragments of strings where pointers belonged, and it vanished
-under any attempt to observe it -- an `fprintf`, or even two plain stores to
-globals. That last property is the tell. A bug that disappears when you look at
-it is a race, and the first thing to check is whether the title's own locks do
-anything.
+The last one is a seed on purpose. That shape occurs 13,359 times in this
+image and 12,464 of those are mid-function, so a pattern loose enough to catch
+the one that matters would split functions. The line between the two
+mechanisms is whether the shape occurs inside functions: a rule when it does
+not, a seed when only a run can say which instance is real.
 
-**The remaining blocker is a lock-order inversion**, traced to both call
-sites:
+**Why an unresolved call is worth this much trouble.** It does not fault and
+nothing is logged at the call site. The callee simply does not run, and the
+arguments already pushed for it stay on the stack. That shifts the caller's
+frame, so its `pop ebx` restores the wrong slot, and the corrupted value is
+passed on as an array index. The fault lands three functions away in code that
+had nothing to do with it. `-DRECOMP_ABI_CHECK` is what makes this tractable:
+it names every function returning with a callee-saved register altered, and
+that list led straight back to the two skipped calls.
+
+**The blocker is now the CRT lock inversion**, and only that:
 
 ```
-main:   _lock(11) from 0x005BE16D  ->  _lock(19) from 0x005B0F0C
-worker: _lock(19) from 0x005B0F2B  ->  _lock(11) from 0x005BE16D
+default mode          7.8 MB, then deadlock
+single-lock mode     14.3 MB, level load completes
 ```
 
-`0x005B0EF3` is `_lock_str(FILE *)`: it turns a `FILE *` into a stream index
-by `(ptr - _iob) / 32` and locks `16 + index`, so lock 19 is stream 3.
-`sub_005BE146` takes lock 11 and walks a 64-entry table at `0x9AEFC0`, which is
-the file-descriptor table. So one thread is on an open path (take the fd table,
-then the stream) and the other on a close path (take the stream, then the fd
-table), on the same stream.
+`RECOMP_CS_MODE=single` is a bisecting tool, not a fix -- it collapses the
+lock hierarchy so there is no order to invert, which hides the difference
+between this runtime and the console rather than explaining it.
 
-Established, so it is not re-derived:
-
-- **Not a leaked lock.** Enters and leaves balance to within the number held at
-  that instant -- 61,154 against 61,135 at the moment of the deadlock.
-- **Neither thread is in CRT teardown.** There is no "worker thread returned"
-  in the log; both are doing live file I/O.
-- **It needs both threads.** `RECOMP_WORKERS=inline` gives zero contention --
-  and zero progress, because this title's worker blocks waiting for requests
-  and never returns. That makes the switch a bisecting tool, not a way to run.
-- **Both threads really are blocked on critical sections.**
-  `RECOMP_HANG_WATCHDOG` samples every thread and shows them in
-  `ZwWaitForAlertByThreadId`, which is what a contended CRITICAL_SECTION waits
-  on.
-
-The tools to carry on with are in place: contended locks are named by CRT
-index rather than by a heap address that moves each run, and
-`RECOMP_HANG_WATCHDOG` gives a per-thread picture with CPU time, which
-separates a spin from a block.
-
-The framebuffer is still black and PUT has not moved. The engine has not
-reached drawing the world, because level load stops at the deadlock.
+With the load complete the framebuffer is still black and the pushbuffer's PUT
+pointer has not moved, so the engine is not submitting draw commands. That is
+the next question, and it is a rendering one rather than a correctness one.
