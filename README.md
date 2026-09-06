@@ -20,39 +20,60 @@ ships with MSVC RTTI left on and Source's name-baking macros intact:
   [Source SDK 2013](https://github.com/ValveSoftware/source-sdk-2013), with an
   exact file to read. The misses are engine internals the SDK omits.
 - Feeding RTTI back into the disassembler found **7,992 functions the linear
-  sweep missed** — 33,140 to **41,223** function starts (+24%)
+  sweep missed** — 33,140 to 41,223 function starts (+24%), and the boundary
+  work a level load forced took it to **49,498**
 
 So a recovered function can often be traced: address to class name to the real
 `.cpp` in the public SDK. Details and caveats in [docs/symbols.md](docs/symbols.md).
 
 ## Status
 
-It boots, runs the engine's own main loop, and streams its own content out of
-the disc archives. It does not yet put the game's picture on screen.
+It boots, loads a level, and draws its own loading screen — the game's
+geometry, in the game's colours, rasterised into the game's own back buffer.
+It is not playable: it stays on that loading screen.
 
 | Step | State |
 |---|---|
 | XBE parsed | done — entry `0x0059C612`, 10 sections, 124 kernel imports |
 | RTTI recovery | done — 2,336 classes / 2,932 vtables / 12,288 methods |
-| Disassembled | done — **49,172** functions, 90.7% of instructions reachable |
+| Disassembled | done — **49,498** functions, 91.3% of instructions reachable |
 | Datamap recovery | done — 253 classes / 1,722 fields |
 | SDK cross-reference | done — 84% of classes located in Source SDK 2013 |
-| func_id / codegen | done — 49,161 of 49,172 translated, ~14.9 M lines of C |
+| func_id / codegen | done — 49,487 of 49,498 translated, 13.4 M lines of C |
 | Static initialisation | done — all 5,305 constructors run, none faulting |
 | Module factories | done — all 13 resolve; material system comes up |
 | Display | done — D3D device created, `AvSetDisplayMode` accepted, clears and flips |
 | Disc archives | done — decompressed and **byte-verified** (see below) |
-| Content load | partial — packs mount, materials and scripts stream out of them |
-| Menu / first frame | not yet — currently faults in the VGUI path |
+| Content load | done — 22.3 MB of a level: map, models, materials, sounds |
+| Level load | done — `+map d1_trainstation_01`, 0 faults, 0 unresolved calls |
+| First pixels | done — its loading screen, from its own pushbuffer |
+| Textures | not yet — glyphs and surfaces draw as flat colour |
+| Gameplay | not yet — the load stops short of handing off to the world |
 
 ### What actually runs
 
 The engine reaches `CModAppSystemGroup::Main`, brings up its material system,
 creates a D3D device, sets a display mode and drives its own frame loop. Give
-it `-retail` and it selects the `Z:/HL2/` content root, mounts
-`zip0_xbox.xzp`, reads the 19,767-entry directory and pulls materials, sound
-scripts and resource files out of it. What it has not done yet is draw its own
-geometry — the remaining work is in VGUI and the menu.
+it `-retail +map d1_trainstation_01` and it selects the `Z:/HL2/` content root,
+mounts `zip0_xbox.xzp`, reads the 19,767-entry directory, opens the `.bsp` and
+pulls 22.3 MB of models, materials, physics and sounds out of it — far enough
+to be loading character models — without a fault or an unresolved indirect
+call.
+
+It also draws. The title submits a real NV2A command stream (`SET_BEGIN_END`,
+`ARRAY_ELEMENT16`, and a `SET_FLIP_READ` per presented frame), and executing it
+puts 2,336 draws and 42,942 indices per frame into the back buffer at plausible
+screen coordinates. The result is HL2's loading screen: the grey dialog panel,
+the title bar, and the orange segmented progress bar, in the title's own
+colours. Text renders as solid blocks because this rasteriser does not sample
+textures yet.
+
+What it does not do is finish. The load reaches a plateau and stops — no
+further I/O, no kernel calls, the progress bar identical minutes apart — while
+the engine keeps rendering. Two intermittent failures remain, roughly one run
+in ten each: a `-1` free-list sentinel dereferenced in the title's own
+allocator, and an engine lock acquired and not released. Both are characterised
+in [docs/boot.md](docs/boot.md).
 
 Command-line arguments reach the title the way the console's launcher passes
 them, through the launch-data page:

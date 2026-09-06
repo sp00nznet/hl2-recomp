@@ -153,7 +153,7 @@ sub_0006A204 tail-jumps to. The seed for it was rejected as
 callee's `ret 8` -- so esp walked off by 4 per call and the object pointer
 slid 8 bytes out from under its own vtable. Accepting a mid-instruction seed
 when it decodes as a prologue fixes it, and Half-Life 2 is unchanged by the
-rule (48,335 functions either way).
+rule (49,498 functions either way).
 
 With that and the loader's own GPU fence registered (its device global is
 0x00034048, the equivalent of the game's 0x0061EDE8), the loader runs its

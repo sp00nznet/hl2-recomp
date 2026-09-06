@@ -417,7 +417,7 @@ Neither is written yet.
 
 ## Order of work
 
-1. **Compile.** 41,215 functions of C++-derived C is itself unproven at this
+1. **Compile.** 49,498 functions of C++-derived C is itself unproven at this
    size; MSVC time and correctness are both unknowns.
 2. **Boot until it stops**, with `RECOMP_TRAP_NULL=1` and
    `RECOMP_WATCHDOG_SECS` on — a null read that returns zero surfaces hundreds

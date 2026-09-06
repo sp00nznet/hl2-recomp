@@ -254,7 +254,7 @@ Measured over the 48,324 translated functions in `hl2_xbox.xbe` afterwards:
 | `jb` / `jae` | 10 | producer is `comiss` or `fcompi`, not integer arithmetic |
 | signed / parity | 20 | needs SF, OF, PF |
 
-229 branches, against 48,324 functions -- rare, but each one is silently
+229 branches, against 49,498 functions -- rare, but each one is silently
 always-false rather than merely imprecise.
 
 The shape of the fix is already visible in the carry case. The other

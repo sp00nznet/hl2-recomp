@@ -133,18 +133,29 @@ containers, vtables everywhere. The other targets are mostly C.
 
 ### Disassembly (`tools.disasm`, seeded with RTTI)
 ```
-total_instructions   2,044,960
-total_functions         41,223      (.text 40,383)
-  seed_vtable_thunk     12,293      <- from tools/rtti.py
+total_instructions   2,044,958
+total_functions         49,498      (.text 48,559)
   by call target        16,959
-  by cc boundary         6,125
+  seed_vtable_thunk     12,300      <- from tools/rtti.py
+  by cc boundary         7,367
   by prologue            5,596
-reachable instructions   87.4%
+  tail jump alias        5,134      <- blocks a branch leaves a function for
+  imm ref target         1,391
+  gap prologue             512
+reachable instructions   91.3%
 total_xrefs            455,004
 kernel imports             124
 ```
-Without the RTTI seeds this pass finds 33,140. 41k functions is roughly 5x Halo;
-expect the recomp step to be the long pole.
+Without the RTTI seeds this pass finds 33,140. The climb from 41,223 to 49,498
+is the boundary work the level load forced: a function reached only by a tail
+jump, one beginning right after a `ret` with no padding, one whose frame
+`__SEH_prolog` builds, a vcall thunk, a bare constant accessor, and the block a
+branch leaves a function for. Each was a stub returning without running the
+code it stood in for -- see [docs/boot.md](docs/boot.md), where one of them
+skipped a `__finally` and leaked a CRT lock.
+
+49k functions is roughly 6x Halo; the recomp step is the long pole, at
+13.4M lines of C across 50 files.
 
 ### Kernel Imports (124)
 Nothing exotic — Av/Ex/Hal/Io/Ke/Mm/Nt/Ps/Rtl/Xc/Xe, the normal set. There is no

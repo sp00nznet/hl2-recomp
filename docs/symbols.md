@@ -219,6 +219,13 @@ total functions            33,140               41,215   (+24%)
 reachable instructions          --                87.4%
 ```
 
+Those are the numbers that experiment measured, and they still are: it is a
+comparison of the sweep with and without RTTI seeding, run once. The image now
+disassembles to **49,498 functions and 91.3% reachable**, but the difference is
+not more seeds -- it is the six function-boundary shapes a level load forced
+out, each of which was a stub returning without running the code it stood in
+for. See [boot.md](boot.md).
+
 disasm also reported *"Realigned 19 seeded addresses the sweep stepped over"* —
 RTTI did not just add functions, it corrected decode boundaries the linear sweep
 had got wrong.
