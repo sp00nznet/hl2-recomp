@@ -626,3 +626,62 @@ function that owns `"CMod_LoadDispInfo: bad texinfo lump size!"` into
 outside the address space, so a garbage pointer rather than a small overrun.
 `intro` has little displacement terrain, which is why it stalls rather than
 crashes. Same fault site and same 722 reads on every run.
+
+## The compare that read a clobbered register
+
+`d1_trainstation_01` faulted deterministically in displacement collision. The
+cause was in the lifter, not the engine:
+
+```
+00371B7D  comiss xmm5, [esi + eax*4]     ; compare with the old eax
+00371B81  lea    eax, [esi + eax*4]      ; now eax is the pointer
+```
+
+`comiss` was emitted as a comment and the comparison rebuilt at the consuming
+`jbe`, by which point the `lea` had overwritten `eax`. So the generated C
+evaluated `MEMF(esi + eax*4)` with `eax` already holding `0x1438C348`, which
+wraps to guest `0x651BCD20` -- the faulting address, exactly.
+
+That is the same mistake the carry flag had: a condition reconstructed at the
+branch instead of snapshotted where the flags are set. `comiss`/`comisd`/
+`ucomiss`/`ucomisd` now record their operands at the compare (`6de7729`), as
+`cmp`/`test`/`bsf`/`cmpxchg` already did. 19 of this image's 12,617 float
+compares read an operand a following line overwrites -- rare, and silently
+fatal in each.
+
+```
+                    before                  after
+d1_trainstation_01  722 reads, fault        1,233 reads, 22.3 MB, 0 faults
+intro               620 reads               644 reads, 14.3 MB, 0 faults
+```
+
+Far enough to be loading character models (`breen_monitor.phx`).
+
+### Finding it
+
+Three gaps in the fault reporter had to be closed first, and each is worth
+keeping:
+
+- The guest-address annotation was capped at 256 MB, so `0x651BCD20` printed as
+  a bare host address with no hint it was a guest pointer at all.
+- `ebp` cannot appear in a register dump: the translator keeps it in a C local,
+  and frameless MSVC code uses it as `this`.
+- `sub_00371B10+0x2A1` is a *host* offset from `SymFromAddr`. It names the
+  guest function correctly but nothing within it, and reading it as a guest
+  offset points at an unrelated function.
+
+What actually identified the operand was dumping the faulting host instruction:
+`F3 0F 10 04 01` is `movss xmm0,[rcx+rax]`, which is the load for
+`MEMF(esi + eax*4)` and nothing else.
+
+## Still outstanding
+
+A guest lock (0x0F782128, engine code rather than CRT) is occasionally acquired
+and not released, and the load stops at 7.8 MB when that happens. It is
+intermittent: three consecutive runs reached 1,070-1,133 reads with every wait
+satisfied, and one 450-second run deadlocked. Same shape as the CRT lock bug --
+`enters` exceeding `leaves` with the second thread blocking forever -- so the
+same tracing finds it.
+
+Both maps otherwise load without a fault and sit on the loading screen: the
+engine renders continuously while the load's stage machine does not advance.

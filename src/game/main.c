@@ -42,6 +42,7 @@
  * extern resolves to the image's TLS template rather than this thread's copy,
  * which starts the guest with every register at zero. */
 extern RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp;
+extern RECOMP_TLS uint32_t g_seh_ebp;
 extern RECOMP_TLS uint32_t g_ebx, g_esi, g_edi;
 extern ptrdiff_t g_xbox_mem_offset;
 
@@ -208,9 +209,23 @@ static void print_host_symbol(void *addr)
     sym->SizeOfStruct = sizeof(SYMBOL_INFO);
     sym->MaxNameLen = 255;
 
-    if (SymFromAddr(GetCurrentProcess(), (DWORD64)(uintptr_t)addr, &disp, sym))
+    if (SymFromAddr(GetCurrentProcess(), (DWORD64)(uintptr_t)addr, &disp, sym)) {
+        IMAGEHLP_LINE64 line;
+        DWORD line_disp = 0;
+
         fprintf(stderr, "  in %s+0x%llX\n", sym->Name,
                 (unsigned long long)disp);
+
+        /* The offset above is into the *host* function, which says nothing
+         * about which guest instruction faulted -- one guest function becomes
+         * hundreds of lines of C. The generated source labels every guest
+         * address as `loc_XXXXXXXX:`, so the line number is the translation
+         * back: file:line names the exact instruction to disassemble. */
+        line.SizeOfStruct = sizeof(line);
+        if (SymGetLineFromAddr64(GetCurrentProcess(),
+                                 (DWORD64)(uintptr_t)addr, &line_disp, &line))
+            fprintf(stderr, "  at %s:%lu\n", line.FileName, line.LineNumber);
+    }
     else
         fprintf(stderr, "  in <no symbol; keep hl2.pdb beside the exe>\n");
 }
@@ -573,6 +588,21 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
     fprintf(stderr, "\n[FAULT] access violation at host %p\n",
             er->ExceptionAddress);
     print_host_symbol(er->ExceptionAddress);
+    {
+        /* The faulting host instruction, verbatim.
+         *
+         * Guest registers live in globals, but the translator keeps some in
+         * C locals -- ebp among them, which frameless MSVC code uses as its
+         * `this`. When the bad address sits in one of those, no register dump
+         * can show it. The host encoding names which host register held it,
+         * and that is decodable offline. */
+        const unsigned char *ip = (const unsigned char *)er->ExceptionAddress;
+        int k;
+        fprintf(stderr, "  host insn bytes:");
+        for (k = 0; k < 16; k++)
+            fprintf(stderr, " %02X", ip[k]);
+        fprintf(stderr, "\n");
+    }
     if (er->NumberParameters >= 2) {
         uintptr_t addr = (uintptr_t)er->ExceptionInformation[1];
         fprintf(stderr, "  %s address host 0x%p",
@@ -580,14 +610,20 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
                 (void *)addr);
         if (g_xbox_mem_offset &&
             addr >= (uintptr_t)g_xbox_mem_offset &&
-            addr < (uintptr_t)g_xbox_mem_offset + 0x10000000u)
+            addr < (uintptr_t)g_xbox_mem_offset + 0xF0000000u)
             fprintf(stderr, "  = guest 0x%08X",
                     (uint32_t)(addr - (uintptr_t)g_xbox_mem_offset));
         fprintf(stderr, "\n");
     }
+    /* ebp too. Frameless MSVC code uses it as an ordinary register -- the
+     * displacement collision builder keeps its `this` there ("mov ebp, ecx")
+     * and addresses every field off it. It is a local in the generated code
+     * rather than a global, so what is observable here is the frame the
+     * function last published for SEH -- stale if it published none, but in a
+     * frame-based function it is the value the fault was computed from. */
     fprintf(stderr, "  guest regs: eax=%08X ecx=%08X edx=%08X ebx=%08X\n"
-                    "              esp=%08X esi=%08X edi=%08X\n",
-            g_eax, g_ecx, g_edx, g_ebx, g_esp, g_esi, g_edi);
+                    "              esp=%08X seh_ebp=%08X esi=%08X edi=%08X\n",
+            g_eax, g_ecx, g_edx, g_ebx, g_esp, g_seh_ebp, g_esi, g_edi);
     print_guest_stack();
 
     /* The heap free-list bucket the allocator was walking.
@@ -651,7 +687,9 @@ int main(int argc, char **argv)
     /* Load symbols up front rather than from inside the handler: at
      * fault time the process is already in a bad way, and SymInitialize
      * allocates. Failure is not fatal -- the handler just prints no name. */
-    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
+    /* LOAD_LINES so a fault can name the generated source line, which is the
+     * only thing that maps a host address back to a guest instruction. */
+    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME | SYMOPT_LOAD_LINES);
     SymInitialize(GetCurrentProcess(), NULL, TRUE);
     AddVectoredExceptionHandler(1, veh_handler);
     hang_watchdog_start();
