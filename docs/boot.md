@@ -685,3 +685,29 @@ same tracing finds it.
 
 Both maps otherwise load without a fault and sit on the loading screen: the
 engine renders continuously while the load's stage machine does not advance.
+
+### Stability after the compare fix
+
+Twelve runs of `d1_trainstation_01` since `6de7729`:
+
+```
+10 runs   1,068-1,302 reads, 21.6-22.3 MB, no fault
+ 1 run    7 reads, fault in the CRT allocator at guest 0xFFFFFFF4
+ 1 run    139 reads, deadlock on engine lock 0x0F782128
+```
+
+Both failures are intermittent and neither is the common case, but both are
+real. The allocator one dereferences 0xFFFFFFF4 -- a -1 sentinel used as a
+pointer -- with `ecx = 0xFFFFFFFF` and `edi = 0xFFFFFFEF`, which is a free-list
+head being walked as if it were a block. HL2 imports no heap kernel export, so
+that allocator is entirely the title's own recompiled code; nothing in this
+runtime manages it, which makes a rare codegen fault and a genuine race equally
+plausible until one is ruled out.
+
+The lock is not leaked -- traced by address it is 577 takes against 577 drops.
+An earlier contention report showed no holder for it, which would have followed
+if the title took it inline and only entered the kernel when contended, meaning
+the shadow lock never modelled the guest's. The balance rules that out: the
+missing line was the race in the report, not a missing acquire. Contention
+reports now name the holder's call site (`692099b`), which is what a next
+attempt should start from.
