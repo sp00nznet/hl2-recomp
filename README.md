@@ -132,6 +132,19 @@ surface being drawn into, which on a double-buffered title is not the one
 `AvSetDisplayMode` named. `HL2_FB_DUMP` writes that other one — what is on
 screen — and finds its address from the title rather than assuming it.
 
+### Why there is no controller
+
+The menu waits on a pad, and so does the loader's attract loop. The title's own
+USB stack is statically linked and initialises correctly -- `XInitDevices` walks
+its driver table, the `'USBH'` device manager runs, and the OHCI controller is
+registered at `0xFED00000` with an interrupt vector. Then it reads a register
+block this runtime maps as zeroed RAM, finds a controller with no root-hub
+ports, and enumerates nothing.
+
+Nothing is missing from the translation; the device is missing. What that takes
+to fix, and the eight-function XPP surface that is the tempting shortcut, are
+in [docs/input.md](docs/input.md).
+
 ### The disc archives
 
 The disc ships `.xz_`, the game reads `.xzp`, and `default.xbe` converts one to
