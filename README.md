@@ -28,9 +28,10 @@ So a recovered function can often be traced: address to class name to the real
 
 ## Status
 
-It boots, loads a level, and draws its own loading screen — the game's
-geometry, in the game's colours, rasterised into the game's own back buffer.
-It is not playable: it stays on that loading screen.
+It boots to its own main menu, with no arguments and no map forced — the
+engine takes the retail path by itself, reaches `eng->Frame()`, and paints
+City 17's skyline out of the title's own textures. It is not playable: the
+menu's text does not draw, and nothing is wired to the controller yet.
 
 | Step | State |
 |---|---|
@@ -47,26 +48,47 @@ It is not playable: it stays on that loading screen.
 | Content load | done — 22.3 MB of a level: map, models, materials, sounds |
 | Level load | done — `+map d1_trainstation_01`, 0 faults, 0 unresolved calls |
 | First pixels | done — its loading screen, from its own pushbuffer |
-| Textures | not yet — glyphs and surfaces draw as flat colour |
+| Boot to menu | done — **no command line**; `CModAppSystemGroup::Main` runs `eng->Frame()` |
+| Textures | done — the title's own swizzled textures sample; menu text still flat |
 | Gameplay | not yet — the load stops short of handing off to the world |
 
 ### What actually runs
 
-The engine reaches `CModAppSystemGroup::Main`, brings up its material system,
-creates a D3D device, sets a display mode and drives its own frame loop. Give
-it `-retail +map d1_trainstation_01` and it selects the `Z:/HL2/` content root,
-mounts `zip0_xbox.xzp`, reads the 19,767-entry directory, opens the `.bsp` and
-pulls 22.3 MB of models, materials, physics and sounds out of it — far enough
-to be loading character models — without a fault or an unresolved indirect
-call.
+Run it with no arguments at all and the engine takes the retail boot path by
+itself. `CModAppSystemGroup::Main` (`sub_0040EF20`, named by the
+`COM_InitFilesystem()` / `eng->Load` / `COM_ShutdownFileSystem()` literals it
+still carries) runs `ModInit`, gets `true` back from `eng->Load`, and enters
+the loop at `sub_0040ED00`:
 
-It also draws. The title submits a real NV2A command stream (`SET_BEGIN_END`,
+```c
+while (eng->GetState() != DLL_CLOSE) {   /* eng = 0x008095D0, vtable[0x34] */
+    pump();                              /* sub_00595F30, owns "quit"      */
+    eng->Frame();                        /* vtable[0x14]                   */
+}
+```
+
+On the way it enumerates `maps/*.bsp`, reads its own `cfg/continue.cfg` and
+`cfg/xboxuser.cfg` off the HDD partition, and sets its display mode. Nothing
+here is driven from outside: no map is forced, and `RECOMP_CMDLINE` is unset.
+
+What it draws is the main menu. About 9,900 draws and 89,600 indices a frame
+go into alternating back buffers at `0x00B98000` and `0x00A6C000`, and the
+background is City 17's skyline sampled from the title's own swizzled
+textures. The menu's text and panels still come out as flat blocks, and the
+scanout buffer stays black — the flip does not reach it yet.
+
+Given `-retail +map d1_trainstation_01` instead, it selects the `Z:/HL2/`
+content root, mounts `zip0_xbox.xzp`, reads the 19,767-entry directory, opens
+the `.bsp` and pulls 22.3 MB of models, materials, physics and sounds out of
+it — far enough to be loading character models — without a fault or an
+unresolved indirect call.
+
+It draws that too. The title submits a real NV2A command stream (`SET_BEGIN_END`,
 `ARRAY_ELEMENT16`, and a `SET_FLIP_READ` per presented frame), and executing it
 puts 2,336 draws and 42,942 indices per frame into the back buffer at plausible
 screen coordinates. The result is HL2's loading screen: the grey dialog panel,
 the title bar, and the orange segmented progress bar, in the title's own
-colours. Text renders as solid blocks because this rasteriser does not sample
-textures yet.
+colours.
 
 What it does not do is finish. The load reaches a plateau and stops — no
 further I/O, no kernel calls, the progress bar identical minutes apart — while
@@ -81,6 +103,17 @@ them, through the launch-data page:
 ```bash
 RECOMP_CMDLINE="-retail" ./bin/hl2.exe
 ```
+
+The menu needs none of it. To see what the engine draws for itself:
+
+```bash
+RECOMP_PB_EXEC=1 RECOMP_FB_DUMP=frame ./bin/hl2.exe   # frame000.bmp, ...
+```
+
+`RECOMP_PB_EXEC` executes the pushbuffer and `RECOMP_FB_DUMP` writes the
+surface being drawn into, which on a double-buffered title is not the one
+`AvSetDisplayMode` named. `HL2_FB_DUMP` writes that other one — what is on
+screen — and finds its address from the title rather than assuming it.
 
 ### The disc archives
 
@@ -120,6 +153,21 @@ any title, found here because HL2 exercised it:
   calls into it were skipped rather than made. Found 837 more functions.
 - **Frames built by `__SEH_prolog`** were classified frameless, so they never
   re-published their frame and `__finally` funclets ran against a dead one.
+- **An SSE compare read a register the next line overwrote** — `comiss` was
+  emitted as a comment and rebuilt at the consuming branch, by which point a
+  `lea` had reused the operand. 19 of this image's 12,617 float compares have
+  that shape, and each is silently fatal.
+- **`swizzle_offset` addressed one texel column for every row** — it spread
+  both coordinates onto even bit positions and masked, so the Y term was almost
+  always zero: 261,632 of 262,144 coordinates collided at 512x512. It had never
+  had a caller until a per-pixel sampler needed one. Now a bit deposit against
+  the same masks the row-walking unswizzler uses, with a test that checks the
+  two agree texel for texel.
+- **Swizzled textures were unsamplable three ways** — a texture stage needed a
+  pitch to be valid and a swizzled texture has none, its size lives in the
+  format word rather than in `SET_TEXTURE_IMAGE_RECT`, and its coordinates are
+  normalised rather than in texels. Swizzled is the Xbox default, so this was
+  every texture the title had.
 - Plus `FscGetCacheSize`/`FscSetCacheSize`, `RtlCompareMemory`, the arity
   of `NtWaitForMultipleObjectsEx`, `rdtsc`, and the AV pack encoding.
 

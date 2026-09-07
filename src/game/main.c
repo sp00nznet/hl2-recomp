@@ -452,14 +452,26 @@ static void hang_watchdog_start(void)
  * scheduled. Reading guest memory directly answers the question that matters:
  * whether the engine drew anything before it stopped.
  *
- * Geometry from what AvSetDisplayMode reported -- 640x480, pitch 2560,
- * framebuffer at 0x00084000. HL2_FB_DUMP names the file, HL2_FB_VA overrides
- * the address.
+ * Geometry from what AvSetDisplayMode reported -- 640x480, pitch 2560.
+ * HL2_FB_DUMP names the file, HL2_FB_VA overrides the address.
+ *
+ * The address is the one the title last set, not a constant. It used to be
+ * 0x00084000, which is where the framebuffer starts and not where it stays:
+ * this engine moves to 0x00A6C000 the moment it owns one, so every dump after
+ * that read an unwritten page and came back as noise -- which looks like a
+ * title rendering garbage rather than a dumper pointed at the wrong memory.
+ *
+ * Note this is the *scanout* buffer. A title that double-buffers is drawing
+ * into the other one, so for "what is being rendered right now" the answer is
+ * the pushbuffer executor's RECOMP_FB_DUMP, which follows the surface actually
+ * being written. This one answers "what is on screen", and on the fault path
+ * that is the question, because nothing is being written any more.
  */
 static void hl2_dump_framebuffer(const char *path)
 {
     const char *va_env = getenv("HL2_FB_VA");
-    uint32_t va = va_env ? (uint32_t)strtoul(va_env, NULL, 0) : 0x00084000u;
+    uint32_t va = va_env ? (uint32_t)strtoul(va_env, NULL, 0)
+                         : xbox_GetDisplayFramebuffer(NULL);
     const uint32_t w = 640, h = 480, pitch = 2560;
     uint32_t row = (w * 3u + 3u) & ~3u;
     uint32_t img = row * h, total = 54u + img, x, y;
@@ -470,6 +482,12 @@ static void hl2_dump_framebuffer(const char *path)
 
     if (!g_xbox_mem_offset)
         return;
+    if (!va) {
+        fprintf(stderr, "  [FB] no display mode set yet; "
+                        "HL2_FB_VA=<addr> to dump anyway\n");
+        fflush(stderr);
+        return;
+    }
     base = (const uint8_t *)((uintptr_t)g_xbox_mem_offset + va);
 
     f = fopen(path, "wb");

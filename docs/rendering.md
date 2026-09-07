@@ -95,7 +95,7 @@ address, pitch and format are right.
 
 ### The executor now rasterises too
 
-`nv2a_pb_exec.c` fills triangles, strips, fans and quads flat into the guest
+`nv2a_pb_exec.c` fills triangles, strips, fans and quads into the guest
 framebuffer — but only batches whose attribute 0 is **already in screen space**,
 and that is measured (every vertex must land inside the surface) rather than
 assumed. Titles draw UI, HUD and 2D overlays pre-transformed, so that is the
@@ -121,6 +121,53 @@ failing through a NaN transform matrix.
 
 That is the value of the split — the same three causes will present identically
 on HL2, and now they are distinguishable in one run.
+
+### And it samples the title's own textures
+
+Flat shading got the loading screen: the panels and the progress bar are solid
+colours, so they were right without a sampler. The main menu is not — it is one
+full-screen textured quad with widgets over it — and getting it to appear took
+three separate things, each of which failed silently and looked like the others.
+
+**Swizzled textures were refused outright.** `record_tex_reg` required a pitch
+before it would mark a stage valid, and a swizzled texture has no rows and so no
+pitch. Swizzled is the Xbox default, so this rejected nearly every texture the
+title had, and each textured quad fell back to flat vertex colour.
+
+**A swizzled texture carries its size in the format word**, not in
+`SET_TEXTURE_IMAGE_RECT`. `IMAGE_RECT` describes a linear image; this title
+sends one once and sets a format 3,176 times. Width and height stayed zero, and
+a zero-sized texture samples nothing.
+
+**`swizzle_offset` was wrong, and had never had a caller.** It spread both
+coordinates onto even bit positions and masked, but the Y mask selects odd ones,
+so the Y term was almost always zero — at 512x512, `offset(0,1)` equalled
+`offset(0,0)` and 261,632 of 262,144 coordinates collided. Nothing noticed
+because nothing called it until a per-pixel sampler did, at which point it read
+one column of the image for every row. It is now a general bit-deposit (scalar
+PDEP) against the masks `xbox_swizzle_masks` produces — the same generator the
+row-walking unswizzler uses, so the two cannot disagree about where a texel
+lives.
+
+That last one now has a test: `tests/d3d8_smoke` swizzles an image with
+`xbox_swizzle_rect` and checks that `swizzle_offset` addresses the same texel
+for every coordinate. Run against the old implementation it fails all seven
+sizes, including 4x4.
+
+Two smaller ones fall out of the same path. Texture coordinates are normalised
+for a swizzled texture and in texels for a linear one, so both are scaled to
+texels before interpolation — without that, every coordinate below 1.0 truncates
+to texel 0 and a whole quad samples a single texel, which looks like a texture
+that decoded wrong rather than one that was never indexed. And attribute 9 is
+texture coordinate 0 only for a title that follows the convention: HL2's menu
+and HUD vertex is position, colour, texcoord at stride 24, with colour in slot 5
+and texcoords in slot 7. Reading slot 9 found nothing. The fallback takes the
+first float2 it finds, which is unambiguous in a vertex whose other members are
+a float3 and a D3DCOLOR.
+
+(That is the pushbuffer twin of the FVF position bug NoRain211 fixed in the D3D8
+path in #23 — same mistake, that a vertex layout can be assumed rather than
+read, in the other half of the renderer.)
 
 ## The boot chain, as far as it is understood
 

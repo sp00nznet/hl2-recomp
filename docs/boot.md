@@ -711,3 +711,96 @@ the shadow lock never modelled the guest's. The balance rules that out: the
 missing line was the race in the report, not a missing acquire. Contention
 reports now name the holder's call site (`692099b`), which is what a next
 attempt should start from.
+
+
+## Booting to the menu, with nothing forced
+
+Every run up to here was given `+map`. Without one the engine had looked stuck:
+static init finished, the archives mounted, and then 1.28 M `RtlEnterCritical-
+Section` calls in 45 s with no further I/O, which reads as a spin.
+
+It is not a spin. It is the game loop. `sub_0040EF20` is
+`CModAppSystemGroup::Main`, and it says so itself -- the timestamp literals it
+passes are still in `.rdata`, at `0x0074A97C` and either side of it:
+
+```
+0x0074A92C  "game->Init"
+0x0074A93D  "MapReslistGenerator_Init()"
+0x0074A95C  "MapReslistGenerator_Shutdown()"
+0x0074A97C  "COM_InitFilesystem()"
+0x0074A994  "COM_ShutdownFileSystem()"
+0x0074A9B0  "eng->Load"
+```
+
+Reading it against those:
+
+```c
+if (ModInit(this, this->m_pParms, this->m_pFactory)) {   /* sub_0040EE30 */
+    eng->vt[0x38](0);
+    COM_TimestampedLog("eng->Load");                     /* sub_00365BE0 */
+    if (eng->Load(0, g_baseDir))                         /* vt[4], 0x008DDE60 */
+        RunListenServer(), eng->Unload();                /* sub_0040ED00, vt[8] */
+    ...
+}
+```
+
+and `sub_0040ED00` is the loop itself, four vtable calls and nothing else:
+
+```c
+while (eng->GetState() != DLL_CLOSE) {   /* vt[0x34], compared against 1 */
+    pump();                              /* sub_00595F30, owns "quit"    */
+    eng->Frame();                         /* vt[0x14]                     */
+}
+```
+
+`eng` is the global at `0x008095D0`. So `eng->Load` returned true and the
+engine is running frames -- the critical-section traffic is one lock taken per
+frame by a title running flat out with no vsync to pace it, not a deadlock.
+
+What it does on the way there is the retail path and nothing else: enumerate
+`maps/*.bsp`, read `cfg/continue.cfg` (21 bytes) and `cfg/xboxuser.cfg` (617
+bytes) off partition 1, open `zip0_xbox.xzp`, then `AvSetDisplayMode` at
+640x480, pitch 2560. No map is named anywhere and `RECOMP_CMDLINE` is unset, so
+`XGetLaunchInfo` fails and the engine takes the empty command line at
+`0x00772EA7` -- which is exactly what a console does when the launcher hands a
+title no arguments.
+
+### Why it looked like it drew nothing
+
+Two diagnostics were pointed at the wrong memory, and both said "black" or
+"noise" while the engine was drawing normally.
+
+The pushbuffer executor is opt-in (`RECOMP_PB_EXEC`). Without it nothing
+consumes the command stream, so the surface stays as the title left it, and
+"the framebuffer is black" measures the executor being off rather than the
+title being idle.
+
+`HL2_FB_DUMP` defaulted to `0x00084000`, where the framebuffer starts and not
+where it stays: this engine moves to `0x00A6C000` the moment it owns one.
+Dumping the old address returned uninitialised memory -- 305,131 of 307,200
+pixels non-black, which looks like a title rendering garbage and is really a
+dumper reading a page nobody wrote. It now asks the runtime
+(`xbox_GetDisplayFramebuffer`) instead of assuming, and says so when no mode
+has been set yet.
+
+Neither is the buffer being drawn into, either. The title double-buffers, so
+the executor's own `RECOMP_FB_DUMP` follows the surface it is writing --
+`0x00B98000` and `0x00A6C000`, alternating -- and that is what shows the frame.
+
+### What is actually on screen
+
+About 9,900 draws and 89,600 indices a frame, roughly 54,700 triangles
+rasterised, none skipped as non-screen-space. The picture is HL2's main menu
+background: City 17 under the Citadel, in the title's own colours, sampled from
+the title's own textures.
+
+Over it are two flat grey blocks. The executor reports every coordinate-bearing
+batch at `y 125.0`, and the blocks sit at that line, so they are the batches it
+rasterised -- the menu's own widgets, in the right place and with nothing
+sampled into them. Which batches those are, and why they take a different path
+from the background quad that does sample, is not established yet.
+
+Still missing at the end of the chain: the scanout buffer at `0x00A6C000` reads
+back all zero from `HL2_FB_DUMP` even while the executor is writing frames, so
+the flip is not reaching the buffer the display is pointed at. That is the next
+thing between "the game renders its menu" and "the menu is on a monitor".
