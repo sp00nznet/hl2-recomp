@@ -301,6 +301,28 @@ clear here, so the device presents as full speed.
 Reaching a divide by zero is progress, not a wall: it means the driver accepted
 the port, built a device, and got as far as queueing a control transfer for it.
 
+It is not the DPC ordering. DPCs ran inline at first -- on the queueing thread,
+before the ISR returned -- which inverts what a DPC is and had the driver's
+enumeration re-entering its own interrupt. That was a fair suspect for a
+half-initialised device structure, so they are queued properly now and drained
+by the timer thread. The crash is identical, on a different thread id, which
+rules the shortcut out and leaves the queue improved anyway.
+
+So `MaxPacketSize` is zero in XAPI's own endpoint structure, and the next
+session starts by finding where that field is filled. The endpoint is reached
+as `URB[+0x10]`, and the field is the word at `endpoint+2`, masked to 11 bits.
+Nothing in this runtime is left unbridged on the path -- the only unbridged
+ordinals in a run are `DbgPrint` and `RtlFreeAnsiString`.
+
+Worth weighing against that: the XPP input surface is eight functions and they
+are all identified above. Overriding them is the pivot this document argues
+against, and the argument still holds -- it is per-title guesswork about
+undocumented XDK structures -- but it is bounded work with a known end, and the
+USB path is now four layers deep with a fifth in front of it. If the
+`MaxPacketSize` question does not answer quickly, the eight-function override
+is the cheaper way to a controller, and the OHCI model keeps its value for
+every other title regardless.
+
 Not done, and next: that MaxPacketSize, then the endpoint and transfer descriptor lists in anger, a device
 answering the standard control transfers, the Xbox gamepad's descriptors and
 its interrupt-IN report, and whatever interrupt delivery turns out to be
