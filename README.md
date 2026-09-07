@@ -31,8 +31,10 @@ So a recovered function can often be traced: address to class name to the real
 It boots to its own main menu, with no arguments and no map forced — the
 engine takes the retail path by itself, reaches `eng->Frame()`, and paints
 City 17's skyline out of the title's own textures. It is not playable: the
-menu draws its background and its navigation glyphs and nothing else, and
-nothing is wired to the controller yet.
+menu draws its background and nothing else, and nothing is wired to the
+controller yet. The intro logos before it are the loader's, and the loader is
+recompiled here but has never been run for its UI — see
+[docs/boot.md](docs/boot.md) for the sequence and where each screen lives.
 
 ![Half-Life 2 (Xbox) recompiled, at its own main menu](docs/images/main-menu.png)
 
@@ -84,8 +86,9 @@ holds the finished frame, so the flip works. Two textures are ever bound —
 and per frame the title submits exactly two batches, a full-screen background
 quad and a two-glyph batch for the `<` and `>` arrows.
 
-That is the whole menu, and it is the limit right now: the text labels are
-never submitted at all. The font pages are read out of the archive
+Against the retail console, captured under xemu, that is the background and
+none of the menu: no grey panel, no `NEW GAME` / `LOAD GAME` / `OPTIONS`, no
+`(A) SELECT` bar. The text labels are never submitted at all. The font pages are read out of the archive
 (`verdana_20`, `verdana_32`, `din-bold_28`, `hl2_symbols_64`) and then nothing
 binds them. So the gap is not in the rasteriser — no batch is rejected, and
 every one that arrives is textured — it is that the engine builds a menu with

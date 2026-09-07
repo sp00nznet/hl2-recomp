@@ -847,3 +847,53 @@ balanced critical-section pair and nothing else at all:
 No I/O, no allocation, no waits: the frame loop runs and the UI behind it does
 not advance. That is the same shape as the level load's plateau, and it is the
 next thing to chase -- not in the renderer.
+
+
+## The startup sequence, from the console
+
+Captured from the retail disc under xemu, to have something to match rather
+than a guess. The disc image was built from `game/` with `xdvdfs pack` and
+checked with this toolkit's own reader (`tools.xiso ls`: 160 files) before it
+was booted.
+
+In order:
+
+| # | Screen | Where it comes from | Us |
+|---|---|---|---|
+| 1 | Valve logo | `LoaderMedia/valve_leader.xmv` | no |
+| 2 | "powered by Source" | loader | no |
+| 3 | Legal / copyright text | loader | no |
+| 4 | HALF-LIFE 2 title, fading up | loader | no |
+| 5 | Key art + orange progress bar, "LOADING..." | game, `title_load.xtf` | **yes** |
+| 6 | MAIN MENU over a chapter background | game, `background01..04.xtf` | background only |
+
+Five is the screen this project already draws -- the "loading screen" in the
+level-load notes above is exactly this, and it is the game's, not the loader's.
+Six is where the recompiled game sits today.
+
+One to four are the loader's, and the loader is a binary this repo already
+recompiles and has never run for its UI. `src/loader/main.c` says why: its
+attract loop (`sub_00014E60`) polls a per-frame callback table nothing here
+populates, spins on a null pointer, and never reaches the install -- so the
+install is called directly and the videos are skipped. That was the right call
+for extracting archives. It is also the whole reason the logos are missing.
+
+### Matching the menu
+
+![reference](images/main-menu-reference.png)
+
+The reference above and `images/main-menu.png` are the same background
+(`background01`), which makes them directly comparable. The game picks one of
+four backgrounds, so a differing background between two runs is not a fault.
+
+What the reference has and we do not:
+
+- a grey translucent panel, roughly x 330..555, y 128..240
+- "MAIN MENU" in orange above it
+- `NEW GAME` on an orange gradient highlight with a `>` chevron, then
+  `LOAD GAME` and `OPTIONS` in white
+- a grey bar across the bottom with the `(A)` glyph and "SELECT"
+
+The `(A)` is from `buttons_32`, the one font page the recompiled game does
+bind and sample correctly. So the glyph path works end to end; what is absent
+is every batch that would draw the panel and the words.
