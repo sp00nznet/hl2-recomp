@@ -33,6 +33,12 @@ engine takes the retail path by itself, reaches `eng->Frame()`, and paints
 City 17's skyline out of the title's own textures. It is not playable: the
 menu's text does not draw, and nothing is wired to the controller yet.
 
+![Half-Life 2 (Xbox) recompiled, at its own main menu](docs/images/main-menu.png)
+
+*`./bin/hl2.exe` with no arguments. 640x480, captured out of the surface the
+title's own pushbuffer drew into. The two grey blocks are the menu's widgets,
+rasterised in the right place with nothing sampled into them yet.*
+
 | Step | State |
 |---|---|
 | XBE parsed | done — entry `0x0059C612`, 10 sections, 124 kernel imports |
