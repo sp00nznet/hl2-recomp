@@ -132,3 +132,6 @@ if [ -d "$HL2/build-msvc" ]; then
 fi
 
 echo "==> done. Now: cmake --build build-msvc --config Release"
+echo "    One build at a time. The game links 50 objects of generated C,"
+echo "    and two concurrent builds share hl2.dir and race on the same"
+echo "    .obj files -- that ends in LNK1104 with bin/hl2.exe deleted."

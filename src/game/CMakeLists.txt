@@ -45,6 +45,7 @@ target_link_libraries(hl2 PRIVATE
     xbox_d3d8
     xbox_dsound
     xbox_input
+    xbox_usb
     xbox_video
     xbox_apu
 )

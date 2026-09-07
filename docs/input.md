@@ -110,6 +110,95 @@ Wiring that once gives the register trace that decides whether the driver polls
 `HcInterruptStatus` or genuinely waits on the IRQ, and that answer decides how
 much of point 4 is needed.
 
+## What is built so far
+
+The register half, behind `RECOMP_USB`, with `RECOMP_USB_TRACE` for the access
+log. Off by default: a port with no descriptor walker behind it is not yet a
+controller, and a title that was working without one must keep behaving exactly
+as it did.
+
+`src/usb/ohci.c` models two controllers at `0xFED00000` and `0xFED08000`, four
+downstream ports between them, and a device on HC0 port 1. The registers with
+behaviour rather than storage are the ones a driver actually gets stuck on:
+
+- `HcCommandStatus.HCR` is self-clearing. It is the first thing a driver
+  writes, and a reset bit that stays set is a hang before anything else runs.
+- `HcInterruptStatus` is write-1-to-clear, not a value to store.
+- `HcRhPortStatus` writes are set/clear *requests by bit position*. Treating
+  them as a value to store looks exactly like a port that will not enable.
+- `HcFmNumber` and `HcFmRemaining` advance on their own, because a stopped
+  frame counter is how a driver recognises a controller that is not running.
+
+Reaching them needs the registers to fault rather than read out of RAM, so the
+two blocks are `PAGE_NOACCESS` and the title's vectored handler routes the
+fault back. That routing is new in this title: `apu_hook_handle_mmio` has
+existed with no caller, which is worth knowing before trusting
+`RECOMP_AC97_READY` -- it protects a page nothing services.
+
+The decoder behind it is `src/platform/mmio_decode.h`. It existed twice already,
+once in `nv2a_mmio_hook.c` and once in `apu_mmio_hook.c`, as the same opcode
+table against two different pairs of accessors; this is that logic with the
+accessors passed in, so this device did not add a third copy. The two originals
+still carry their own and can move onto it when next touched.
+
+`tests/mmio_decode` covers it, and the cases are the ones where being wrong is
+silent: an instruction length that leaves the instruction pointer mid-opcode,
+a 32-bit read that does not clear the high half of its destination, flags that
+send a poll loop the wrong way, and -- the one that matters most -- an
+unrecognised opcode reported as handled, which steps over an instruction nobody
+decoded and corrupts the guest with no message at all.
+
+### What the driver did with it
+
+It found the controller and the device. The whole bring-up, from the trace:
+
+```
+read  +0x00 = 00000010   HcRevision -- OHCI 1.0
+write +0x08 = 00000001   HcCommandStatus.HCR -- reset, self-cleared
+write +0x18 = 80000000   HcHCCA
+write +0x04 = 000000BE   HcControl -- HCFS operational, all lists enabled
+write +0x20 = 80000520   HcControlHeadED -- a real endpoint descriptor
+read  +0x54 = 00010101   port 1: CCS | PPS | CSC
+write +0x54 = 00010000   clears CSC -- the root hub handshake
+read  +0x58 = 00000100   port 2: powered, empty
+write +0x10 = 00000040   HcInterruptEnable |= RHSC
+```
+
+Every register with behaviour was exercised and behaved: the reset bit had to
+self-clear for the sequence to continue past `+0x08`, the port write had to be
+a set/clear request rather than a stored value for `CSC` to go away, and the
+port read had to report `CCS` for the driver to acknowledge a device at all.
+
+Then it stops. After enabling the root hub status change interrupt it never
+touches a register again, and the title carries on into the same frame loop as
+before. That answers the question this was built to ask: **the driver is
+interrupt-driven, and does not poll.** No amount of register modelling moves it
+further on its own.
+
+It also reads four port status registers although the root hub reports two,
+which is why the register file covers `0x54` through `0x64`.
+
+### So the next step is interrupt delivery
+
+XPP takes its vector from `HalGetInterruptVector` and registers the handler
+with `KeInitializeInterrupt` and `KeConnectInterrupt`, both of which this
+runtime already bridges. `KeInitializeInterrupt` even writes the service
+routine, its context and the vector into the guest `KINTERRUPT` at +0, +4 and
++8. `KeConnectInterrupt` returns TRUE and keeps none of it.
+
+So the missing link is small and specific: record the connected interrupt
+object, and give the OHCI model a way to raise one -- set the status bits,
+publish a done head in the HCCA, and call the guest service routine. Calling a
+recompiled function from the host side already has a pattern in this tree, in
+the loader's `recomp_manual.c`. The open questions are which thread runs it and
+what IRQL means here, not whether it can be reached.
+
+Not done, and next: interrupt delivery, then the endpoint and transfer descriptor lists, a device
+answering the standard control transfers, the Xbox gamepad's descriptors and
+its interrupt-IN report, and whatever interrupt delivery turns out to be
+needed. The loader has the same problem and the same fix; its `loader_veh` has
+not been wired, deliberately, until this is known to work in one place.
+
 ## Provenance
 
 NoRain211's doaxbv-re has an `ohci_model.c` that solves this problem, and it is

@@ -37,6 +37,7 @@
 #include "../kernel/kernel.h"
 #include "../kernel/xbox_memory_layout.h"
 #include "../d3d/d3d8_xbox.h"
+#include "../usb/ohci.h"
 
 /* RECOMP_TLS is required: the runtime defines these thread-local, and a plain
  * extern resolves to the image's TLS template rather than this thread's copy,
@@ -581,6 +582,31 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
     if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
         return EXCEPTION_CONTINUE_SEARCH;
 
+    /* Trapped device registers, before anything treats this as a crash.
+     *
+     * The USB host controllers are the reason this routing exists at all: a
+     * title's XAPI is linked into the image and reads their registers
+     * directly, so they cannot be plain memory if they are to answer. The
+     * fault address is a host address; the guest one is what the device
+     * models are addressed by.
+     *
+     * This is also the first caller the MMIO path has had in this title.
+     * apu_hook_handle_mmio has existed unused, which is why RECOMP_AC97_READY
+     * protects a page nothing services -- worth knowing before trusting that
+     * switch. */
+    if (g_xbox_mem_offset && er->NumberParameters >= 2) {
+        uintptr_t fault = (uintptr_t)er->ExceptionInformation[1];
+        uintptr_t base  = (uintptr_t)g_xbox_mem_offset;
+
+        if (fault >= base) {
+            uint32_t guest_va = (uint32_t)(fault - base);
+
+            if (xbox_OhciOwnsAddress(guest_va)
+             && xbox_OhciHandleMmio(ep->ContextRecord, guest_va))
+                return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
+
     /* Cap the dumps. The static-init walk now continues past a constructor
      * that faults, so a systematic problem produces thousands of these and
      * the useful part -- the first few, and the final counts -- scrolls away.
@@ -783,6 +809,12 @@ int main(int argc, char **argv)
         printf("MCPX APU: %s\n", g_apu_state ? "initialised" : "FAILED");
     }
 
+    /* The USB host controllers, before the kernel comes up so the title's
+     * XAPI finds them the first time it looks. Opt-in via RECOMP_USB; see
+     * docs/input.md for why a port without a descriptor walker behind it is
+     * not yet a controller. */
+    xbox_OhciInit();
+
     xbox_WatchdogStart();
 
     printf("Initializing kernel replacement...\n");
@@ -860,6 +892,7 @@ int main(int argc, char **argv)
     xbe_entry_point();
 
     printf("\nGame returned. Cleaning up...\n");
+    xbox_OhciReport();
     RECOMP_ICALL_FEEDBACK_DUMP();
     xbox_kernel_shutdown();
     xbox_MemoryLayoutShutdown();
