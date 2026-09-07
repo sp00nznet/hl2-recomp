@@ -193,7 +193,57 @@ recompiled function from the host side already has a pattern in this tree, in
 the loader's `recomp_manual.c`. The open questions are which thread runs it and
 what IRQL means here, not whether it can be reached.
 
-Not done, and next: interrupt delivery, then the endpoint and transfer descriptor lists, a device
+### The port comes up
+
+Interrupt delivery is in, and with it the driver takes the port all the way to
+enabled. Four things had to be built, and each was found by the driver stopping
+rather than by reading code.
+
+`KeConnectInterrupt` recorded nothing. It returned TRUE and dropped the
+interrupt object, so the routine `KeInitializeInterrupt` had already written
+into guest memory was unreachable from this side. It keeps it by vector now,
+and Half-Life 2's USB ISR is `0x00624D26` on vector 1.
+
+`KeInsertQueueDpc` had no bridge at all and returned 0. An interrupt service
+routine is supposed to do almost nothing except mask its source and queue a
+DPC, so every driver following that pattern acknowledged its interrupt and then
+did none of the work. The trace showed it exactly: read the enable mask, read
+the status, mask MIE, queue -- and stop.
+
+`KeSetTimer` did nothing, on a note saying timers were not needed for basic
+execution. A driver polls its hardware from a timer DPC; without one the
+enumeration state machine has no clock. `KeSetTimerEx` was aliased to
+`KeSetTimer`, which is worse than missing: its `Period` argument sits before
+the DPC pointer, so the alias read the period as the routine to call.
+
+And the interrupt has to be delivered by the controller thread rather than from
+the register write that caused it. The guest register file is thread-local, so
+pointing `g_esp` at a worker stack from inside the MMIO fault handler
+overwrites the stack pointer of the thread being interrupted.
+
+What that produces, end to end:
+
+```
+raised 00000040 -> ISR claimed it        root hub status change
+write +0x54 = 80000010                   SetPortReset
+read  +0x10 = 80000073                   ISR: what is enabled
+read  +0x0C = 00000040                   ISR: status is RHSC
+write +0x14 = 80000000                   ISR: mask MIE, then queue the DPC
+read  +0x54 = 00100103                   PRSC | PPS | PES | CCS
+write +0x54 = 00100000                   DPC: clears the reset change
+write +0x0C = 00000040                   DPC: clears RHSC
+write +0x10 = 80000000                   DPC: unmask MIE
+```
+
+`00100103` is the line that matters: connected, **enabled**, reset complete. The
+root hub port is up, which is as far as the hub can take it.
+
+Two deliveries in a run, so level-triggered delivery is self-limiting -- the
+handler clears the status bit and the line drops. There is a cap that reports a
+handler which never clears rather than spinning the ISR forever, because an
+interrupt storm is miserable to recognise from the outside.
+
+Not done, and next: the endpoint and transfer descriptor lists, a device
 answering the standard control transfers, the Xbox gamepad's descriptors and
 its interrupt-IN report, and whatever interrupt delivery turns out to be
 needed. The loader has the same problem and the same fix; its `loader_veh` has
