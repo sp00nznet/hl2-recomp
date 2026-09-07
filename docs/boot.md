@@ -776,12 +776,23 @@ consumes the command stream, so the surface stays as the title left it, and
 title being idle.
 
 `HL2_FB_DUMP` defaulted to `0x00084000`, where the framebuffer starts and not
-where it stays: this engine moves to `0x00A6C000` the moment it owns one.
-Dumping the old address returned uninitialised memory -- 305,131 of 307,200
-pixels non-black, which looks like a title rendering garbage and is really a
-dumper reading a page nobody wrote. It now asks the runtime
-(`xbox_GetDisplayFramebuffer`) instead of assuming, and says so when no mode
-has been set yet.
+where it stays: this engine moves the moment it owns one. Dumping the old
+address returned uninitialised memory -- 305,131 of 307,200 pixels non-black,
+which looks like a title rendering garbage and is really a dumper reading a
+page nobody wrote. It asks the runtime (`xbox_GetDisplayFramebuffer`) now.
+
+Asking was not enough, because the runtime was storing the wrong thing.
+`AvSetDisplayMode` states the scanout address the way the CRTC wants it, which
+is physical: HL2's is `0x00A6C000`, and read as a virtual address that lands in
+the loaded image rather than on the framebuffer, which is at `0x80A6C000` in
+the contiguous window. The window path already resolved it and the setter
+stored the unresolved form, so the checksum probe and the dumper both read the
+image and both reported an unchanging zero. The resolution happens once now,
+before the value is stored.
+
+That cost a wrong conclusion that was written down and published here: that the
+flip never reached the display buffer. It does. The scanout holds the finished
+frame, 212,843 of 307,200 pixels non-black.
 
 Neither is the buffer being drawn into, either. The title double-buffers, so
 the executor's own `RECOMP_FB_DUMP` follows the surface it is writing --
@@ -800,7 +811,39 @@ rasterised -- the menu's own widgets, in the right place and with nothing
 sampled into them. Which batches those are, and why they take a different path
 from the background quad that does sample, is not established yet.
 
-Still missing at the end of the chain: the scanout buffer at `0x00A6C000` reads
-back all zero from `HL2_FB_DUMP` even while the executor is writing frames, so
-the flip is not reaching the buffer the display is pointed at. That is the next
-thing between "the game renders its menu" and "the menu is on a monitor".
+### What the menu actually contains
+
+Counting rather than guessing, once the batches were instrumented: the title
+binds exactly two textures for the life of the run, and submits exactly two
+batches a frame.
+
+```
+[GPU] batches: 8473 textured, 0 with no texcoords, 0 with texcoords but no usable stage
+  [TEXUSE] 0x80EFA000 512x512 fmt 0x07 swz: 4235 batches     background01
+  [TEXUSE] 0x80513400 256x256 fmt 0x0F dxt: 4238 batches     buttons_32
+```
+
+So the rasteriser is not the limit any more -- nothing is rejected, everything
+that arrives is textured, and the flip lands. The menu itself is empty. Its
+font pages are read out of the archive and never bound:
+
+```
+materials/vgui/fonts/verdana_20.xtf      materials/vgui/fonts/din-bold_28.xtf
+materials/vgui/fonts/verdana_32.xtf      materials/vgui/fonts/buttons_32.xtf
+```
+
+`buttons_32` is the one that draws; the text faces are loaded and unused. What
+the engine asks the kernel for while it sits there says the same thing -- one
+balanced critical-section pair and nothing else at all:
+
+```
+[KERNEL] summary: 456113 total calls, latest ordinal 277
+  ordinal 277 x226828     RtlEnterCriticalSection
+  ordinal 294 x226827     RtlLeaveCriticalSection
+  ordinal 151 x1001       KeStallExecutionProcessor   frozen
+  ordinal 219 x142        NtReadFile                  frozen
+```
+
+No I/O, no allocation, no waits: the frame loop runs and the UI behind it does
+not advance. That is the same shape as the level load's plateau, and it is the
+next thing to chase -- not in the renderer.

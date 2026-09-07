@@ -31,13 +31,14 @@ So a recovered function can often be traced: address to class name to the real
 It boots to its own main menu, with no arguments and no map forced — the
 engine takes the retail path by itself, reaches `eng->Frame()`, and paints
 City 17's skyline out of the title's own textures. It is not playable: the
-menu's text does not draw, and nothing is wired to the controller yet.
+menu draws its background and its navigation glyphs and nothing else, and
+nothing is wired to the controller yet.
 
 ![Half-Life 2 (Xbox) recompiled, at its own main menu](docs/images/main-menu.png)
 
 *`./bin/hl2.exe` with no arguments. 640x480, captured out of the surface the
-title's own pushbuffer drew into. The two grey blocks are the menu's widgets,
-rasterised in the right place with nothing sampled into them yet.*
+title's own pushbuffer drew into. The glyphs either side are `<` and `>` from
+the title's own `buttons_32` font page, decoded from DXT5.*
 
 | Step | State |
 |---|---|
@@ -77,11 +78,18 @@ On the way it enumerates `maps/*.bsp`, reads its own `cfg/continue.cfg` and
 `cfg/xboxuser.cfg` off the HDD partition, and sets its display mode. Nothing
 here is driven from outside: no map is forced, and `RECOMP_CMDLINE` is unset.
 
-What it draws is the main menu. About 9,900 draws and 89,600 indices a frame
-go into alternating back buffers at `0x00B98000` and `0x00A6C000`, and the
-background is City 17's skyline sampled from the title's own swizzled
-textures. The menu's text and panels still come out as flat blocks, and the
-scanout buffer stays black — the flip does not reach it yet.
+What it draws is the main menu, and it reaches the screen: the scanout buffer
+holds the finished frame, so the flip works. Two textures are ever bound —
+`background01` (512x512, swizzled X8R8G8B8) and `buttons_32` (256x256, DXT5) —
+and per frame the title submits exactly two batches, a full-screen background
+quad and a two-glyph batch for the `<` and `>` arrows.
+
+That is the whole menu, and it is the limit right now: the text labels are
+never submitted at all. The font pages are read out of the archive
+(`verdana_20`, `verdana_32`, `din-bold_28`, `hl2_symbols_64`) and then nothing
+binds them. So the gap is not in the rasteriser — no batch is rejected, and
+every one that arrives is textured — it is that the engine builds a menu with
+nothing in it.
 
 Given `-retail +map d1_trainstation_01` instead, it selects the `Z:/HL2/`
 content root, mounts `zip0_xbox.xzp`, reads the 19,767-entry directory, opens
