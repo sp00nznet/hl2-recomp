@@ -4,6 +4,10 @@
   "note": "Unresolved indirect-call target from a loader run. Decodes as a complete function (a struct copy loop over [esi+ecx*4+0x18])."
  },
  {
+  "start": "0x0006A176",
+  "note": "Unresolved indirect-call target from a loader run, in XPP. Starts immediately after sub_0006A114 ends, with 'xor eax,eax' and a clean prologue, and pushes the pool tag 'USBH' (0x48425355) -- it is the USB host stack bring-up. Unseeded it is not a function, so the indirect call to it is skipped and no controller is ever enumerated, which is what leaves the attract loop with no input to advance on."
+ },
+ {
   "start": "0x00023E80",
   "note": "Unresolved indirect-call target; the first address of the loader's D3D section, and a clean 'mov eax,[esp+4]' entry."
  },

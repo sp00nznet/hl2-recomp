@@ -897,3 +897,42 @@ What the reference has and we do not:
 The `(A)` is from `buttons_32`, the one font page the recompiled game does
 bind and sample correctly. So the glyph path works end to end; what is absent
 is every batch that would draw the panel and the words.
+
+
+### The loader, run for its UI rather than its decompressor
+
+Screens one to four are the loader's, so the loader was run with its own attract
+loop rather than the install called directly. Two things came out of it.
+
+**The USB host stack was never being translated.** A run reported an unresolved
+indirect call to `0x0006A176`, in XPP. Nothing had claimed those bytes, so no
+body was generated and the call was skipped. Disassembling them by hand shows a
+clean entry immediately after `sub_0006A114` ends, and the second thing it does
+is push `0x48425355` -- `'USBH'`, a pool tag. It is the USB host bring-up, and
+it had been silently absent, which is a good reason for a title to find no
+controller. It is seeded now (`config/loader_seed_functions.json`) and resolves.
+
+That is worth stating plainly because the same shape is the likeliest
+explanation for the game's menu: Half-Life 2's XAPI is statically linked too,
+and the runtime maps the MCPX aperture zeroed with no OHCI behind it, so a
+title's own USB enumeration has nothing to find.
+
+**Where the loader stops now.** It brings up D3D, clears the surface twice, and
+then submits nothing at all -- `DMA_PUT` and `DMA_GET` both frozen at `0x1BB0`,
+0 draws, 0 batches. Meanwhile it makes 385 million indirect calls to
+`sub_0001B58B`, which is a glyph lookup: it splits a 16-bit character into
+`>> 4` and `& 0xF` and searches `{start, count}` range tables at `[esi+0x8C]`
+and `[esi+0x94]`. Its own recursion is bounded -- a miss retries with the
+fallback character at `[esi+0x9C]` and returns `0x80004005` when that misses too
+-- so the repetition is a caller measuring text every iteration of a loop that
+never advances.
+
+It never opens its media. `D:\LoaderMedia\loader.xpr`, `Valve_Leader.xmv` and
+`Demo_Attract.xmv` are all named in the image, `D:\` maps to the game directory
+and the prefix match is case-insensitive, so the path layer is not the problem;
+the loader simply never gets that far. Eighteen reads in a run, all of them the
+partition and TDATA/UDATA probing every title does at startup.
+
+So the loader is further along than the "spins on a null pointer" note above
+described -- it runs, clears and lays out text -- and it is still short of
+loading a font or a logo.
