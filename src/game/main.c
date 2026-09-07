@@ -579,8 +579,24 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
-    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+    /* Anything fatal, once, whichever thread it was on.
+     *
+     * The report below only ever covered access violations, so a stack
+     * overflow, an illegal instruction or a raised C++ exception went past
+     * silently and the process just stopped -- which is indistinguishable from
+     * a clean exit if you are reading a log. Naming the code and the thread
+     * costs one branch and is the difference between a diagnosis and a guess. */
+    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) {
+        static unsigned others;
+        if (others++ < 4) {
+            fprintf(stderr, "\n[EXCEPTION] code 0x%08lX at %p on thread %lu\n",
+                    (unsigned long)er->ExceptionCode,
+                    er->ExceptionAddress, GetCurrentThreadId());
+            print_host_symbol(er->ExceptionAddress);
+            fflush(stderr);
+        }
         return EXCEPTION_CONTINUE_SEARCH;
+    }
 
     /* Trapped device registers, before anything treats this as a crash.
      *

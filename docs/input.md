@@ -243,7 +243,65 @@ handler clears the status bit and the line drops. There is a cap that reports a
 handler which never clears rather than spinning the ISR forever, because an
 interrupt storm is miserable to recognise from the outside.
 
-Not done, and next: the endpoint and transfer descriptor lists, a device
+### The transfer lists, and where it stops now
+
+A host controller is a bus master: the driver builds endpoint and transfer
+descriptors in RAM, points `HcControlHeadED` at them, and the controller walks
+that list itself. None of it goes through MMIO, which is why the driver looked
+idle after the port came up -- it was not idle, it was talking to memory.
+
+`ohci.c` walks the control list now, and `usb_gamepad.c` is the device on the
+other end: standard descriptors over endpoint 0 and the 20-byte report over the
+interrupt endpoint, fed from the host's own pad through `xbox_input`. The pad
+is not a HID device -- interface class 0x58 subclass 0x42, Microsoft's own, with
+a fixed report layout -- so there is no report descriptor and nothing asks for
+one.
+
+Two bugs in that walker are worth recording, because both are the same mistake:
+calling into guest territory without the checks guest code assumes.
+
+The descriptor pointers are **untrusted input**. The driver writes
+`HcControlHeadED` twice during bring-up and the second write is `0xCCCCCCCC` --
+MSVC's uninitialised fill, from a local it never assigned. Following it landed
+outside the mapping and took the runtime down with an access violation the
+title itself would never have had. Every guest address the walker follows is
+bounds-checked against `xbox_GetMappedSize()` now.
+
+And a thread that runs recompiled code needs **its own TIB**, not just its own
+stack. `fs:[0]` is the SEH chain head and `fs:[4]` reaches the CRT's per-thread
+data, so a guest function with an SEH prologue on a thread whose `g_fs_base` is
+zero dereferences null before it runs a line of its own body. The controller
+thread and the kernel timer thread both allocate one, and both refuse to run
+guest code at all rather than proceed without it.
+
+Neither of those was visible as a fault, because `veh_handler` only reported
+access violations. Everything else went past silently and the process simply
+stopped, which in a log is indistinguishable from a clean exit. It names any
+fatal exception now, with the code and the thread, and that is what produced
+the diagnosis below in one run instead of three guesses.
+
+**Where it stops.** The driver reaches transfer submission -- `sub_006260CC`
+dispatching on endpoint type -- and divides by zero in `sub_00625BCA`:
+
+```
+and edx, 0x7ff        ; MaxPacketSize, 11 bits
+cmp [ecx + 0x14], eax ; length zero? then skip
+div esi               ; length / MaxPacketSize
+```
+
+It is dividing a transfer length by MaxPacketSize, and MaxPacketSize is zero.
+That is the chicken and egg of enumeration: the value comes from the device
+descriptor, and reading the device descriptor is the transfer being set up. A
+driver resolves it with a default of 8 for endpoint 0 until the real descriptor
+arrives, so the question is where this one expects that default to come from --
+its own device structure, or something the root hub should have told it about
+the port. Port speed is the first thing to check: `LSDA` in `HcRhPortStatus` is
+clear here, so the device presents as full speed.
+
+Reaching a divide by zero is progress, not a wall: it means the driver accepted
+the port, built a device, and got as far as queueing a control transfer for it.
+
+Not done, and next: that MaxPacketSize, then the endpoint and transfer descriptor lists in anger, a device
 answering the standard control transfers, the Xbox gamepad's descriptors and
 its interrupt-IN report, and whatever interrupt delivery turns out to be
 needed. The loader has the same problem and the same fix; its `loader_veh` has
