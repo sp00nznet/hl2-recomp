@@ -1271,3 +1271,71 @@ above it, it is a feature rather than a bug.
 
 The recompiler fix is loader-only: the game's `.text` contains no
 register-operand indirect jumps at all, so regenerating it changes nothing.
+
+## The loader draws its video, and what was in the way
+
+Three things stood between "the executor sees the stream" and "pixels reach the
+framebuffer". None of them looked like a rendering bug from the outside.
+
+**Nothing was attached to the draws.** The loader submits geometry as
+immediate-mode vertices -- `SET_VERTEX4F` carries the position and writing its
+`w` completes a vertex, with `SET_VERTEX_DATA2F`/`4UB` supplying texcoord and
+colour. The executor only implemented `INLINE_ARRAY`, so every `SET_BEGIN_END`
+pair arrived empty. What identified it was printing the last parameter next to
+each unhandled method, which turned a list of numbers into a readable vertex:
+
+```
+[GPU]   0x1518 x223384  last=0x441FE000 (639.5000)      x
+[GPU]   0x151C x223384  last=0x43EFC000 (479.5000)      y
+[GPU]   0x1520 x223384  last=0x00000000 (0.0000)        z
+[GPU]   0x1524 x223384  last=0x3F800000 (1.0000)        w
+[GPU]   0x18C8 x223352  last=0x44200000 (640.0000)      u
+[GPU]   0x18CC x223352  last=0x43F00000 (480.0000)      v
+```
+
+With those handled the batches decode perfectly: `prim 8, 4 indices`, a
+full-screen quad from (0.5, 479.5) to (639.5, 0.5) with unnormalised texcoords,
+6,855 textured batches, 13,710 triangles.
+
+**And still a black screen.** 1.8 billion pixels written, every one 0x00000000.
+The texture dump appeared to show a valid grey frame, which was itself the trap:
+that dump composites the sampled texel over mid-grey by alpha, so an all-zero
+texel comes out as 0x808080. The texture was empty, and the dump said so in a
+way that read as "fine".
+
+It was empty because the tiled aperture was a view of RAM. On hardware physical
+P, `0x80000000+P` and `0xF0000000+P` are one memory. Here they cannot be: the
+image is loaded into the RAM mapping, so aliasing the contiguous window onto it
+would put a title's pinned physical pools on its own code -- Halo pins 3.4 MB at
+0x61000, inside its image. So the contiguous window keeps separate storage, and
+the only question is which of the two the tiled aperture views. It is the
+contiguous one: a tiled address is a GPU surface address by construction, and
+GPU surfaces come from `MmAllocateContiguousMemory`. Against RAM, the XMV
+converter wrote each frame through `0xF1C63000` while D3D sampled the texture at
+`0x81C63000`.
+
+The startup check had been proving tiled-to-RAM, which nothing depended on,
+while the pairing everything depended on went untested. It now proves that one.
+
+**A double-buffered title has moved on by flip time.** The frame dump used the
+current colour surface, but the loader has already pointed it at the next buffer
+and cleared it before the flip arrives, so the dump caught the frame that had
+not been drawn yet. It now dumps the surface the last batch drew into.
+
+### Where it is
+
+The loader renders its intro end to end: geometry, texture, rasteriser,
+framebuffer, flip. The frames are a solid red field -- the pixels come from the
+video texture, so the path is joined up, and what is wrong is the YUV-to-RGB
+conversion itself. `sub_0003A089` is dense MMX and SSE (`cvtpi2ps`, `pmaddwd`,
+`pshufw`, `packssdw`, `punpcklbw`), which is the obvious next place to look now
+that its control flow is right.
+
+### The game is not blocked on the same thing
+
+Rebuilt with all of this, `hl2.exe` still reports `draws 0` -- and the reason is
+upstream of anything here. Its pushbuffer carries 295 distinct methods and
+12,948 flips in a minute, and not one draw method: no `SET_BEGIN_END`, no
+`INLINE_ARRAY`, no `ARRAY_ELEMENT16`, no immediate vertices. It is presenting
+frames it never drew into. That is a separate question from the loader's and
+the next one for the game.
