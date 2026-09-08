@@ -300,6 +300,47 @@ static LONG CALLBACK loader_veh(PEXCEPTION_POINTERS ep)
         }
     }
 
+    /* Above the tiled aperture: commit on demand and say so.
+     *
+     * The tiled window aliases the 64 MB of RAM, so 0xF4000000 is the first
+     * address past it, and a fault there has two very different causes that
+     * look identical in a single report: a surface the guest legitimately
+     * placed past 64 MB, or a copy loop that started inside the window and
+     * ran off the end. Committing each page as it is asked for and printing
+     * it separates them -- a bounded set of pages is a surface, a march
+     * through consecutive pages is a runaway.
+     *
+     * Diagnostic only, hence the variable: handing out zeroed pages here
+     * lets a runaway keep running instead of stopping where it went wrong. */
+    if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION
+     && er->NumberParameters >= 2 && getenv("RECOMP_TILED_GROW")) {
+        uintptr_t a = (uintptr_t)er->ExceptionInformation[1];
+        if (base && a >= base + 0xF4000000ull && a < base + 0xFD000000ull) {
+            void *page = (void *)(a & ~(uintptr_t)0xFFF);
+            static unsigned committed;
+            MEMORY_BASIC_INFORMATION mbi;
+            /* 64K at a time: that is the reserve granularity, so a page-sized
+             * request past the first one lands inside a reservation that
+             * already exists and the flags stop matching. */
+            void *blk = (void *)(a & ~(uintptr_t)0xFFFF);
+            int ok = VirtualAlloc(blk, 0x10000, MEM_COMMIT, PAGE_READWRITE)
+                  || VirtualAlloc(blk, 0x10000, MEM_RESERVE | MEM_COMMIT,
+                                  PAGE_READWRITE) != NULL;
+            if (!ok && VirtualQuery(page, &mbi, sizeof mbi))
+                fprintf(stderr, "  [TILED+] guest 0x%08X REFUSED err=%lu"
+                                " state=0x%lX protect=0x%lX type=0x%lX\n",
+                        (uint32_t)(a - base), GetLastError(),
+                        mbi.State, mbi.Protect, mbi.Type);
+            if (ok) {
+                if (++committed <= 8 || (committed % 64) == 0)
+                    fprintf(stderr, "  [TILED+] block %u: guest 0x%08X\n",
+                            committed, (uint32_t)(a - base) & ~0xFFFFu);
+                fflush(stderr);
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+            fflush(stderr);
+        }
+    }
     fprintf(stderr, "\n[FAULT] host %p", er->ExceptionAddress);
     if (er->NumberParameters >= 2) {
         uintptr_t a = (uintptr_t)er->ExceptionInformation[1];
@@ -308,7 +349,16 @@ static LONG CALLBACK loader_veh(PEXCEPTION_POINTERS ep)
         if (base && a >= base && a < base + 0x100000000ull)
             fprintf(stderr, " = guest 0x%08X", (uint32_t)(a - base));
     }
-    fprintf(stderr, "\n  guest esp 0x%08X\n", g_esp);
+    /* The guest registers, not just esp. A faulting address one past an
+     * aperture says nothing about how it was computed; the register it came
+     * out of, and the ones beside it, do. These are thread-locals and the
+     * handler runs on the faulting thread, so they are that thread's. */
+    fprintf(stderr, "\n  guest eax=%08X ecx=%08X edx=%08X ebx=%08X\n"
+                    "        esp=%08X ebp=%08X esi=%08X edi=%08X\n",
+            g_eax, g_ecx, g_edx, g_ebx, g_esp, g_ebp, g_esi, g_edi);
+    /* And which function. A bare host address names nothing; the symbol
+     * is the generated function, which is the guest one. */
+    probe_symbol(er->ExceptionAddress);
     fflush(stderr);
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -487,6 +537,8 @@ int main(int argc, char **argv)
     const char *xbe_path = (!extract && argc > 1) ? argv[1] : LOADER_XBE;
 
     setvbuf(stdout, NULL, _IONBF, 0);
+    /* So a fault report can name the function rather than an address. */
+    SymInitialize(GetCurrentProcess(), NULL, TRUE);
     AddVectoredExceptionHandler(1, loader_veh);
     printf("HL2 Xbox loader (default.xbe) -- %s\n",
            extract ? "extracting an xCmp archive" : "performing the HDD install");
@@ -566,9 +618,16 @@ int main(int argc, char **argv)
      * Its D3D spins in sub_0002A170 comparing the contiguous block at
      * [device+0x30] against what it has submitted at [device+0x2C] -- the
      * identical shape to the game's sub_00612430, because it is the same
-     * D3D8LTCG. 0x00034048 is the global holding the device pointer, the
-     * loader's equivalent of the game's 0x0061EDE8. */
-    xbox_Nv2aMirrorFence(0x00034048u, 0x2Cu, 0x30u);
+     * D3D8LTCG.
+     *
+     * Unlike the game, the loader's device structure is AT 0x00034048 --
+     * it is not a global holding a pointer to one. Reading it as a
+     * pointer lands at 0x34050, where +0x2C is 0x0000000F and +0x30 is
+     * 0x80000000, so every tick wrote 15 to the base of the contiguous
+     * window. Taken directly, +0x2C is 0x80001000 and +0x30 is
+     * 0x80081000: a pushbuffer and somewhere to report progress. */
+    if (!getenv("RECOMP_NO_FENCE"))
+        xbox_Nv2aMirrorFenceAt(0x00034048u, 0x2Cu, 0x30u);
 
     printf("\nRunning the loader...\n");
     fflush(stdout);
