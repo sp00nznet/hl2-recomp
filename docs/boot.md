@@ -1045,6 +1045,81 @@ loader's full 274-method list is longer than the top ten the report prints.
 Printing all of them, and putting a watchpoint on the loader's device
 structure, is where this goes next.
 
+### It is not a hang. It is an error screen.
+
+Every theory about the loader stopping assumed it was waiting for something.
+It is not waiting. `RECOMP_LOADER_SPIN` samples the host thread running guest
+code and names the generated function, and it says the same thing every time:
+
+```
+[SPIN] sample 1:
+  [SPIN] sub_00012170 + 0x668
+```
+
+And the last instruction of `sub_00012170` is:
+
+```
+0x00012237  ebfe    jmp 0x12237
+```
+
+A jump to itself. `sub_00012170` is not the frame function -- it is the fatal
+error screen. It selects a message through a jump table, draws it, presents,
+and halts forever. The messages are in the image, unlisted because they are
+UTF-16:
+
+```
+0x0006F970  "There is a problem with the disc you are using."
+0x0006F938  "It may be dirty or damaged."
+```
+
+That also explains the very first oddity in a loader run, the failed open of
+`Z:\hl2fatal.log`, which was there from the beginning and read as noise.
+
+### What it is actually unhappy about
+
+Two causes, found in order.
+
+The first was the install being incomplete: only `zip0_xbox.xzp` was on the
+HDD, so the loader looked for `zip0_xbox_english.xzp`, did not find it, and
+called the disc bad. Extracting it with the loader's own decompressor -- 57
+duplicated files byte-identical -- cleared that, and the archive failures are
+gone.
+
+The error screen still comes up, and now the last thing before it is this:
+
+```
+[PATH] \Device\CdRom0\LoaderMedia\Valve_Leader.xmv
+[FILE] -> 0x00000000
+[READ] @0 want=1736704 got=1736704
+```
+
+It reads the Valve logo in full and then fails. So the failure is in playing
+it, and the reason is a number worth writing down:
+
+```
+section    functions   bytes claimed   of        coverage
+.text            566          84,119   77,424    109%
+XPP              188          23,628   24,633     96%
+DSOUND           330          32,888   36,004     91%
+D3D              256          56,607   76,240     74%
+XMV              103          57,574  163,204     35%
+DOLBY              2             155   29,056      1%
+```
+
+**The XMV decoder is 35% disassembled.** Two-thirds of it was never turned into
+C, so a call into the missing part is skipped rather than made, and a video
+decoder missing two-thirds of itself cannot decode a video. The loader reads
+the file, tries to play it, fails, and reports the only thing it knows how to
+report about media it cannot read: a bad disc.
+
+DOLBY at 1% is the same shape and has not mattered yet.
+
+So the intro does not render because the video decoder is not there. That is a
+disassembly coverage problem in the toolkit rather than anything about the
+loader, and `--seed-functions` is the only lever exposed -- seeding two-thirds
+of a section by hand is not one. The passes that find functions from immediate
+references and data pointers already run; they are not finding these.
+
 ### The install marker, separately
 
 The loader reinstalls on every run because `Z:\version_235.txt` is missing --

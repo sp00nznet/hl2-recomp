@@ -19,6 +19,7 @@
  * the game itself is pointed at, so the archives land where it looks for them.
  */
 #include <windows.h>
+#include <dbghelp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -96,10 +97,83 @@ static DWORD WINAPI loader_probe(LPVOID unused)
             fprintf(stderr, "  [PROBE] font=0x%08X status=0x%08X%s\n",
                     font, stat,
                     font ? "" : "   <- null, every string is skipped");
+            /* The D3D device, field by field.
+             *
+             * The title submits its frame, asks for a flip and then waits on
+             * a word it expects hardware to change. Which word is faster to
+             * watch than to read out of the disassembly: print the first
+             * sixteen dwords every few seconds, and the one that never moves
+             * while its neighbours do is the answer. 0x00034048 holds the
+             * device pointer -- the same global the fence mirror uses. */
+            {
+                uint32_t dev = *(const uint32_t *)(base + 0x00034048u);
+                if (dev && dev < 0x04000000u) {
+                    int k;
+                    fprintf(stderr, "  [PROBE] device 0x%08X:", dev);
+                    for (k = 0; k < 16; k++)
+                        fprintf(stderr, " %08X",
+                                *(const uint32_t *)(base + dev + k * 4));
+                    fprintf(stderr, "\n");
+                }
+            }
             fflush(stderr);
             if (++reported > 12)
                 break;
         }
+    }
+    return 0;
+}
+
+/* Which function is it spinning in.
+ *
+ * Every theory about where the loader stops has been formed by reading its
+ * disassembly, and every one has been wrong: the font was not null, and the
+ * function it looked parked in turned out to be Release. The guest has no
+ * instruction pointer of its own -- it is recompiled C -- but the host
+ * thread running it does, and a suspended sample of that names the
+ * generated function, which names the guest one.
+ *
+ * Ported from the game main.c, which has had this for a while. The loader
+ * never got it, which is why five build cycles went into guessing. */
+static HANDLE g_probe_thread;
+
+static void probe_symbol(void *addr)
+{
+    char buf[sizeof(SYMBOL_INFO) + 256];
+    SYMBOL_INFO *sym = (SYMBOL_INFO *)buf;
+    DWORD64 disp = 0;
+
+    memset(buf, 0, sizeof buf);
+    sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+    sym->MaxNameLen   = 255;
+    if (SymFromAddr(GetCurrentProcess(), (DWORD64)(uintptr_t)addr,
+                    &disp, sym))
+        fprintf(stderr, "  [SPIN] %s + 0x%llX\n", sym->Name,
+                (unsigned long long)disp);
+    else
+        fprintf(stderr, "  [SPIN] %p (no symbol)\n", addr);
+}
+
+static DWORD WINAPI loader_spin_probe(LPVOID unused)
+{
+    int i;
+
+    (void)unused;
+    SymInitialize(GetCurrentProcess(), NULL, TRUE);
+    for (i = 0; i < 6; i++) {
+        CONTEXT ctx;
+
+        Sleep(6000);
+        memset(&ctx, 0, sizeof ctx);
+        ctx.ContextFlags = CONTEXT_CONTROL;
+        if (SuspendThread(g_probe_thread) == (DWORD)-1)
+            break;
+        if (GetThreadContext(g_probe_thread, &ctx)) {
+            fprintf(stderr, "\n[SPIN] sample %d:\n", i + 1);
+            probe_symbol((void *)(uintptr_t)ctx.Rip);
+        }
+        ResumeThread(g_probe_thread);
+        fflush(stderr);
     }
     return 0;
 }
@@ -373,6 +447,11 @@ int main(int argc, char **argv)
     }
 
     xbox_WatchdogStart();
+    if (getenv("RECOMP_LOADER_SPIN")
+     && DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
+                        GetCurrentProcess(), &g_probe_thread, 0,
+                        FALSE, DUPLICATE_SAME_ACCESS))
+        CloseHandle(CreateThread(NULL, 0, loader_spin_probe, NULL, 0, NULL));
     if (getenv("RECOMP_LOADER_PROBE"))
         CloseHandle(CreateThread(NULL, 0, loader_probe, NULL, 0, NULL));
     xbox_kernel_init();
