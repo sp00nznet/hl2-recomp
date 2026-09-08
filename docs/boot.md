@@ -994,6 +994,57 @@ frame? It either blits through a D3D8 call that needs bridging or writes to a
 surface whose address nothing here has followed. `RECOMP_USB` is unrelated;
 `RECOMP_VBLANK` is what turns this on.
 
+### The font is not the problem, and that was worth measuring
+
+The frame function skips every string when the font object is null:
+
+```
+mov  eax, [ebx + 0x22a8]     ; the font
+test eax, eax
+je   0x1222a                 ; null -> draw nothing, submit nothing
+```
+
+That reads like the answer, and it is wrong. The font is built by
+`sub_0001B3AA` from a 5,413-byte blob in `.rdata` at `0x704b8` -- static data,
+no file needed -- and the call is guarded on a status word at `[obj + 0x310]`,
+where error class `0x9E` skips it. Reading cannot tell those apart.
+
+`RECOMP_LOADER_PROBE` answers it by looking. The object is findable without
+knowing where it was allocated, because its constructor writes the vtable
+`0x0006F928` into its first word and nothing else in the image holds that
+value; scan for it, then read the fields:
+
+```
+[PROBE] loader object at 0x00F7DC98
+[PROBE] font=0x00F81710 status=0x00000000
+```
+
+The font exists and the status is clean, so the guard passes and the drawing
+path runs. The null-font theory was a reading of the disassembly that the
+machine disproved in one run, which is the third time this session that
+measuring beat inferring.
+
+### What is actually true
+
+The loader submits 451 methods across 274 distinct kinds, with per-method
+counts of 7 to 23, and then nothing. That is a one-time initialisation burst
+and two clears -- not a frame loop rendering at 60 Hz, which would be
+thousands. `WAIT_FOR_IDLE` appears twelve times.
+
+The guest is parked at `0x0001520C`, inside vtable slot 1 of the attract loop,
+and it is neither spinning on indirect calls (about 5,000 in 45 s, nearly all
+of them this runtime's own vblank DPCs) nor calling the kernel. A thread that
+makes no calls and burns no dispatch is in a tight busy-wait on memory --
+something it expects hardware to change.
+
+So the remaining question is which word it is watching. `DMA_GET` tracks
+`DMA_PUT`, so the pushbuffer fence is satisfied and it is not that. The
+candidates are a flip or swap counter, or a semaphore the GPU is expected to
+write; the executor reports the flip methods unhandled for the game, and the
+loader's full 274-method list is longer than the top ten the report prints.
+Printing all of them, and putting a watchpoint on the loader's device
+structure, is where this goes next.
+
 ### The install marker, separately
 
 The loader reinstalls on every run because `Z:\version_235.txt` is missing --

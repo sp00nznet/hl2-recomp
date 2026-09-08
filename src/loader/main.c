@@ -42,6 +42,68 @@ static void call_guest(void (*fn)(void), uint32_t this_ptr)
     fn();
 }
 
+/* Why the loader draws nothing, measured rather than read.
+ *
+ * Its frame function skips every string when the font object is null:
+ *
+ *     mov eax, [ebx + 0x22a8]     ; the font
+ *     test eax, eax
+ *     je   0x1222a                ; null -> draw nothing, submit nothing
+ *
+ * The font is built in sub_00014060 from a 5,413-byte blob in .rdata, but the
+ * call is guarded on a status word at [obj + 0x310] -- error class 0x9E skips
+ * it. Which of those is happening cannot be told apart by reading, only by
+ * looking, and the loader has none of the instrumentation the game has.
+ *
+ * The object is findable without knowing where it was allocated: its
+ * constructor writes the vtable 0x0006F928 into its first word, and nothing
+ * else in the image holds that value. Scan for it, then read the two fields.
+ */
+#define LOADER_VTABLE   0x0006F928u
+#define LOADER_FONT_OFF 0x22A8u
+#define LOADER_STAT_OFF 0x0310u
+
+static DWORD WINAPI loader_probe(LPVOID unused)
+{
+    uint32_t found = 0;
+    int reported = 0;
+
+    (void)unused;
+    for (;;) {
+        uintptr_t base = (uintptr_t)xbox_GetMemoryOffset();
+        uint32_t va;
+
+        Sleep(3000);
+        if (!base)
+            continue;
+
+        /* Re-scan until it is found; the object does not exist at startup. */
+        if (!found) {
+            for (va = 0x00010000u; va < 0x04000000u; va += 4) {
+                if (*(const uint32_t *)(base + va) == LOADER_VTABLE) {
+                    found = va;
+                    fprintf(stderr, "  [PROBE] loader object at 0x%08X\n", va);
+                    break;
+                }
+            }
+            if (!found)
+                continue;
+        }
+
+        {
+            uint32_t font = *(const uint32_t *)(base + found + LOADER_FONT_OFF);
+            uint32_t stat = *(const uint32_t *)(base + found + LOADER_STAT_OFF);
+            fprintf(stderr, "  [PROBE] font=0x%08X status=0x%08X%s\n",
+                    font, stat,
+                    font ? "" : "   <- null, every string is skipped");
+            fflush(stderr);
+            if (++reported > 12)
+                break;
+        }
+    }
+    return 0;
+}
+
 extern void xbe_entry_point(void);
 
 /* The loader's install, driven directly.
@@ -311,6 +373,8 @@ int main(int argc, char **argv)
     }
 
     xbox_WatchdogStart();
+    if (getenv("RECOMP_LOADER_PROBE"))
+        CloseHandle(CreateThread(NULL, 0, loader_probe, NULL, 0, NULL));
     xbox_kernel_init();
     xbox_path_init(LOADER_GAME_DIR, LOADER_SAVE_DIR);
     xbox_kernel_bridge_init();
