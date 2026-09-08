@@ -94,6 +94,18 @@ static DWORD WINAPI loader_probe(LPVOID unused)
         {
             uint32_t font = *(const uint32_t *)(base + found + LOADER_FONT_OFF);
             uint32_t stat = *(const uint32_t *)(base + found + LOADER_STAT_OFF);
+            /* The state machine and the two flags that route to the fatal
+             * error screen at sub_00012170:
+             *
+             *   [+0x2290] && [+0x218]  -> error screen
+             *   [+0x2270]              -> state, 0xA is the last one
+             *
+             * Reading them beats reading the disassembly, which has been
+             * wrong about this loader three times now. */
+            fprintf(stderr, "  [PROBE] state=%u f2290=%u f218=0x%08X\n",
+                    *(const uint32_t *)(base + found + 0x2270u),
+                    *(const unsigned char *)(base + found + 0x2290u),
+                    *(const uint32_t *)(base + found + 0x0218u));
             fprintf(stderr, "  [PROBE] font=0x%08X status=0x%08X%s\n",
                     font, stat,
                     font ? "" : "   <- null, every string is skipped");

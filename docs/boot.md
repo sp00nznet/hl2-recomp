@@ -1106,19 +1106,57 @@ XMV              103          57,574  163,204     35%
 DOLBY              2             155   29,056      1%
 ```
 
-**The XMV decoder is 35% disassembled.** Two-thirds of it was never turned into
-C, so a call into the missing part is skipped rather than made, and a video
-decoder missing two-thirds of itself cannot decode a video. The loader reads
-the file, tries to play it, fails, and reports the only thing it knows how to
-report about media it cannot read: a bad disc.
+**That number is not the problem, and reading it as one was wrong.** The
+unclaimed bytes are a single contiguous 129,108-byte block at `0x00040ED0`, and
+sampling it shows what it is:
 
-DOLBY at 1% is the same shape and has not mattered yet.
+```
+00040ED0  80000000 80000000 b5000000 b5000000
+00041000  0b000000 02000000 06000000 09000000
+00050000  c701c701 c701c701 e701e701 e701e701
+```
 
-So the intro does not render because the video decoder is not there. That is a
-disassembly coverage problem in the toolkit rather than anything about the
-loader, and `--seed-functions` is the only lever exposed -- seeding two-thirds
-of a section by hand is not one. The passes that find functions from immediate
-references and data pointers already run; they are not finding these.
+Repeated constants and small integers -- the codec's lookup tables. A video
+decoder is mostly tables, so 35% code is normal, and there are no stubs
+anywhere in the section. The decoder is there.
+
+### What actually fails
+
+The state machine sits at state 9 with both error flags set, which is measured
+rather than inferred:
+
+```
+[PROBE] state=9 f2290=1 f218=0x00000001
+```
+
+and that pair routes to the error screen on every frame. The call that sets it
+up is at `0x00013C76`:
+
+```
+push 0x6fd64                  ; "D:\LoaderMedia\Valve_Leader.xmv"
+lea  ecx, [esi + 0x1c4]
+call 0x14880                  ; start playing it
+...
+jge  0x13cab                  ; >= 0 keeps going
+jmp  0x12170                  ; < 0 -> the disc error screen
+```
+
+So the loader asks to play the Valve logo, the call returns a negative status,
+and it reports a bad disc. `sub_00014880` reaches into the XMV section at
+`sub_00038CDA`, which is translated and unstubbed like the rest of it.
+
+Why that call fails is the next question, and it is the first one in this
+sequence that has not been answered. Everything ahead of it is now known: the
+media loads, the frame clock runs, the flip is handled, the error screen is an
+error screen rather than a hang, and the decoder is present.
+
+A note on method, because it cost most of a session. Four theories about this
+loader were formed by reading its disassembly and all four were wrong -- the
+font was null, it was blocked in Present, the fence offsets were wrong, the XMV
+section was half missing. Each was disproved in one run by an instrument that
+took ten minutes to write. The loader now has three of those, `RECOMP_LOADER_PROBE`,
+`RECOMP_LOADER_SPIN` and `RECOMP_PB_UNHANDLED_ALL`, and the next question
+should start with them.
 
 ### The install marker, separately
 
