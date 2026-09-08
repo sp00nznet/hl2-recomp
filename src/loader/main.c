@@ -627,7 +627,20 @@ int main(int argc, char **argv)
      * window. Taken directly, +0x2C is 0x80001000 and +0x30 is
      * 0x80081000: a pushbuffer and somewhere to report progress. */
     if (!getenv("RECOMP_NO_FENCE"))
-        xbox_Nv2aMirrorFenceAt(0x00034048u, 0x2Cu, 0x30u);
+        xbox_Nv2aMirrorFence(0x00034048u, 0x2Cu, 0x30u);
+
+    /* And the swap counter the XMV player paces on.
+     *
+     * sub_00027060 is D3D's present statistics: it dereferences the global
+     * at 0x00034048 -- so the device is at 0x00034050 and the counter at
+     * 0x00035E38 -- and hands back [device+0x1DE8], the count of completed
+     * swaps. The player subtracts the value it saw when playback started and
+     * presents a frame only once that difference has passed the frame's own
+     * timestamp. Nothing here moves it, so it stayed 0: the first frame
+     * converted, set its done flag, and all 40,000 decode iterations after it
+     * judged every frame too early. The intro was one black picture, held. */
+    if (!getenv("RECOMP_NO_SWAP_COUNT"))
+        xbox_Nv2aFrameCounter(0x00034048u, 0x1DE8u);
 
     printf("\nRunning the loader...\n");
     fflush(stdout);
