@@ -1166,3 +1166,108 @@ The loader reinstalls on every run because `Z:\version_235.txt` is missing --
 then look for `Z:\version_235.txt.mrk`, a per-file marker whose format is not
 known here, so the install still runs. Not on the path to the intro, but it is
 why a run spends its time reading archives.
+
+## Why the XMV play call failed: DirectSound, and then the recompiler
+
+That was the open question above, and it has two answers stacked on top of each
+other.
+
+### DSERR_NODRIVER, and an opt-in that had outlived its reason
+
+`sub_00014880` returns `0x88780078`. That is `DSERR_NODRIVER`, and the loader
+prints it itself, through a format string a few lines further on:
+
+```
+0x6fe1c  "Unable to enable audio stream 0 (error %x)\n"
+```
+
+so the "bad disc" screen is a failure to start audio. Following it down:
+`sub_00039189` (XMV) calls `sub_00062576` (DSOUND), which reaches
+`sub_00068347`, which returns `DSERR_NODRIVER` when `sub_00067C14` returns 0.
+That last one is the AC'97 bring-up, and it is short enough to read whole:
+
+```
+mov  eax, [0xfec0012c]        ; GLOB_CNT
+or   eax, 2                   ; de-assert cold reset
+and  eax, 0xfffffff3          ; clear warm reset and shutdown
+mov  [0xfec0012c], eax
+...
+L:  test [0xfec00130], 0x100   ; GLOB_STA: primary codec ready
+    jne  done
+    KeStallExecutionProcessor(20)
+    dec  edi                   ; 1000 tries
+    jnz  L
+    xor  ebx, ebx              ; timed out -> DSERR_NODRIVER
+```
+
+The runtime has reported that bit since Wreckless needed it, behind
+`RECOMP_AC97_READY`, left opt-in because reporting a codec with no DSP behind it
+traded a late crash for an early hang. The APU model answers the DSP handshake
+now, so that reasoning no longer applies here: with the variable set the loader
+gets through audio init, the APU starts (`SECTL=0000000F`), and DMA_PUT climbs
+past 0x7B000 instead of stopping at 0x1BB0.
+
+### A `jmp ebx` that was not a call
+
+Past audio, the loader faulted writing guest `0xF4000000` -- exactly one byte
+past the tiled aperture, which aliases the 64 MB of RAM. Two very different
+causes look identical there: a surface legitimately placed past 64 MB, or a copy
+loop that started inside the window and ran off the end. `RECOMP_TILED_GROW`
+commits those pages on demand and prints each one, which separates them in a
+single run. It was the second: 2,304 consecutive 64K blocks, `0xF4000000`
+through `0xFE000000`, 144 MB of runaway.
+
+The arguments were all fine -- 640x480, destination `0xF1C63000`, pitch `0xA00`,
+1.2 MB in total and well inside the window. What was not fine was the stack:
+
+```
+[ESP] sub_0003A288 @after call 0x0003A089  esp=00F7D66C
+[ESP] sub_0003A288 @after call 0x0003A089  esp=00F7D640
+[ESP] sub_0003A288 @after call 0x0003A089  esp=00F7D614
+[ABI] sub_0003A089: ebx esi edi esp(epilogue never ran)
+[ICALL] unresolved target 0x0003A0DC
+```
+
+0x2C leaked per call. `sub_0003A089` is the XMV YUV-to-RGB converter, written as
+a continuation chain: four blocks that each do `mov ebx, <next>; jmp <shared
+tail>`, with the shared tail ending `jmp ebx`. Every target is inside the one
+function, so it is a computed goto -- but it was lifted as an indirect tail call,
+resolved to nothing, and the shared tail never came back, so the epilogue never
+ran. Fixed upstream in the recompiler (`_lift_jmp` now emits gotos when the
+register's immediates land inside the function; `tools/recomp/test_intra_indirect_jmp.py`).
+
+With that, `esp` is flat across every call, there are no faults, and the loader
+runs its whole install and attract sequence without crashing.
+
+### Where it stops now
+
+It renders, in the sense that matters least: the executor sets up the surface
+(`0x001B0000`, pitch 2560, clip 640x480), the clears land, the flips happen and
+dump 640x480 BMPs. The BMPs are black, and the counters say why:
+
+```
+[GPU] surface 0x001B0000 pitch 2560 clip 640x480+0+0 clears 65377 | 10075491 unhandled methods (326 distinct)
+[GPU] draws 0 (0 with coordinates), 0 indices
+[GPU] batches: 0 textured, 0 with no texcoords, 0 with texcoords but no usable stage
+```
+
+The geometry is there in the stream -- 1.5 million `SET_BEGIN_END` pairs, four
+vertices each, with `SET_TEXTURE_ADDRESS` and `SET_TEXTURE_IMAGE_RECT` alongside:
+
+```
+[PB] subch 0 method 0x17FC x3023818  SET_BEGIN_END
+[PB] subch 0 method 0x18C8 x6048506
+[PB] subch 0 method 0x18CC x6048506
+[PB] subch 0 method 0x1518 x6049376
+[PB] subch 0 method 0x1B08 x1511474  SET_TEXTURE_ADDRESS
+```
+
+but the loader submits its vertices as per-attribute immediate writes
+(`SET_VERTEX_DATA2F_M` at 0x1880 + attr*8; 0x18C8/0x18CC is attribute 9,
+TEXCOORD0) rather than as `INLINE_ARRAY`, which is the only form the executor
+implements. So `SET_BEGIN_END` arrives with nothing attached and every batch
+draws zero triangles. That is the next thing to write, and unlike everything
+above it, it is a feature rather than a bug.
+
+The recompiler fix is loader-only: the game's `.text` contains no
+register-operand indirect jumps at all, so regenerating it changes nothing.
