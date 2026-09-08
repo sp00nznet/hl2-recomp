@@ -71,6 +71,7 @@ echo "==> abi_analysis"
 echo "==> recomp"
 (cd "$RECOMP" && py -3 -m tools.recomp "$XBE" --all --split 1000 \
     --disasm-dir  "$OUT/disasm" \
+    ${TRACE_FUNCS:+--trace-functions "$TRACE_FUNCS"} \
     --func-id-dir "$OUT/func_id" \
     --abi-dir     "$OUT/abi" \
     --exclude-manual "$HL2/src/loader/recomp/recomp_manual.c" \

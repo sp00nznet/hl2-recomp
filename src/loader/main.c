@@ -20,6 +20,7 @@
  */
 #include <windows.h>
 #include <dbghelp.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -102,6 +103,25 @@ static DWORD WINAPI loader_probe(LPVOID unused)
              *
              * Reading them beats reading the disassembly, which has been
              * wrong about this loader three times now. */
+            /* The buffer the video was read into. The loader allocates
+             * 1,736,752 bytes at 0x01081000 and reads the whole file into
+             * it; a valid XMV has the magic "Xbox" at offset 12. If that
+             * is not there, the read went somewhere the parser is not
+             * looking and the parser is right to reject it. */
+            {
+                const unsigned char *v =
+                    (const unsigned char *)(base + 0x01081000u);
+                const unsigned char *w =
+                    (const unsigned char *)(base + 0x81081000u);
+                fprintf(stderr, "  [PROBE] window 0x81081000: %02X %02X %02X %02X"
+                                " magic=%c%c%c%c\n",
+                        w[0], w[1], w[2], w[3],
+                        w[12], w[13], w[14], w[15]);
+                fprintf(stderr, "  [PROBE] xmv buf: %02X %02X %02X %02X"
+                                " magic=%c%c%c%c\n",
+                        v[0], v[1], v[2], v[3],
+                        v[12], v[13], v[14], v[15]);
+            }
             fprintf(stderr, "  [PROBE] state=%u f2290=%u f218=0x%08X\n",
                     *(const uint32_t *)(base + found + 0x2270u),
                     *(const unsigned char *)(base + found + 0x2290u),
@@ -245,6 +265,10 @@ static BOOL load_xbe(const char *path, void **out_data, size_t *out_size)
 extern ptrdiff_t g_xbox_mem_offset;
 
 /* Report where a guest fault landed, in guest addresses. */
+/* The emulated APU answers its own registers; see loader_veh. */
+bool apu_hook_handle_mmio(PCONTEXT ctx, uintptr_t fault_addr,
+                          uint32_t fault_xbox_va, int is_write);
+
 static LONG CALLBACK loader_veh(PEXCEPTION_POINTERS ep)
 {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
@@ -252,6 +276,29 @@ static LONG CALLBACK loader_veh(PEXCEPTION_POINTERS ep)
 
     if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
         return EXCEPTION_CONTINUE_SEARCH;
+
+    /* Trapped device registers, before this is treated as a crash.
+     *
+     * RECOMP_AC97_READY makes the APU aperture PAGE_NOACCESS so its
+     * registers can be answered by the emulated APU, and until now
+     * nothing answered them: apu_hook_handle_mmio existed in the tree
+     * with no caller at all. The result was a title that got further and
+     * then took an access violation on the first APU register it read.
+     *
+     * The loader needs this because its logo videos play their audio
+     * through DirectSound, which is what the APU is for. */
+    if (base && er->NumberParameters >= 2) {
+        uintptr_t fault = (uintptr_t)er->ExceptionInformation[1];
+
+        if (fault >= base) {
+            uint32_t va = (uint32_t)(fault - base);
+
+            if (va >= 0xFE800000u && va < 0xFE880000u
+             && apu_hook_handle_mmio(ep->ContextRecord, fault, va,
+                                     (int)er->ExceptionInformation[0]))
+                return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
 
     fprintf(stderr, "\n[FAULT] host %p", er->ExceptionAddress);
     if (er->NumberParameters >= 2) {
@@ -453,9 +500,40 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* The default 64 MB map is left alone deliberately.
+     *
+     * XMV playback writes through the tiled alias at 0xF0000000 and runs
+     * off the end of it. Enlarging the map does not fix that -- it just
+     * moves the fault: at 64 MB it lands on 0xF4000000, and at 256 MB it
+     * lands on 0xFE000000, having walked the whole aperture and the NV2A
+     * register block behind it. Both are exactly the end of whatever is
+     * mapped, which makes it an unbounded write rather than a small one,
+     * and 64 MB is what the console actually has. */
+
     if (!xbox_MemoryLayoutInit(xbe_data, xbe_size)) {
         fprintf(stderr, "xbox_MemoryLayoutInit failed\n");
         return 1;
+    }
+
+    /* The MCPX APU, the same bring-up the game does.
+     *
+     * The loader plays its logos through XMV, and XMV playback opens
+     * DirectSound for the audio track. Without an APU DirectSoundCreate
+     * returns DSERR_NODRIVER, the playback call fails, and the loader
+     * concludes the disc is unreadable and puts up its fatal error screen --
+     * which is exactly what it was doing: sub_00014880 returning 0x88780078,
+     * traced right through to the error screen.
+     *
+     * The codec still has to report ready for DirectSound to get that far,
+     * which is RECOMP_AC97_READY. */
+    {
+        typedef struct MCPXAPUState MCPXAPUState;
+        extern MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr);
+        extern MCPXAPUState *g_apu_state;
+
+        g_apu_state = mcpx_apu_init_standalone(
+            (uint8_t *)(uintptr_t)xbox_GetMemoryOffset());
+        printf("MCPX APU: %s\n", g_apu_state ? "initialised" : "FAILED");
     }
 
     xbox_WatchdogStart();
