@@ -1339,3 +1339,87 @@ upstream of anything here. Its pushbuffer carries 295 distinct methods and
 `INLINE_ARRAY`, no `ARRAY_ELEMENT16`, no immediate vertices. It is presenting
 frames it never drew into. That is a separate question from the loader's and
 the next one for the game.
+
+## The intro plays
+
+Three more things, and the loader plays its Valve logo.
+
+### cvtpi2ps was never lifted
+
+The frames went from solid red to solid black once `cvtpi2ps` had a lifter.
+It had none: an xmm destination with an mm source matches neither the MMX paths
+nor the SSE ones, so all twelve occurrences in `sub_0003A089` became TODO
+comments. Every integer-to-float step of the YUV-to-RGB converter was simply
+absent, and the float pipeline ran on whatever the xmm registers held from the
+previous block.
+
+That is the worst shape a recompiler bug takes -- everything downstream still
+runs, and produces a plausible-looking wrong answer. Worth checking for
+directly: `grep -o '/\* TODO: [a-z0-9]*' src/loader/recomp/gen/*.c | sort |
+uniq -c` now lists only `in`, `out`, `cli`, `sti` and friends, all in code that
+never executes.
+
+### The install has to actually complete
+
+The loader copies the disc to the HDD before it plays anything, and it was
+restarting that copy every run, so the attract sequence never got a turn.
+`sub_00011F80(path, expected_size)` is the check, and it is strict: the file
+must exist, be non-empty, have a zero-byte `.mrk` sibling, and **be exactly
+`expected_size` bytes** -- otherwise it deletes the file and copies it again.
+
+The sizes are the declared uncompressed size **rounded up to 512**:
+
+| file | xCmp header says | on disk must be |
+|---|---|---|
+| `zip0_xbox.xzp` | 434,653,523 | 434,653,696 |
+| `zip0_xbox_english.xzp` | 186,195,539 | 186,195,968 |
+
+`tools/install_hdd.sh` writes the exact byte count, which is correct as an
+extraction and wrong as an install -- the loader deleted both archives and
+started over. Padding each to the next 512-byte boundary makes them survive.
+(The loader also deletes the language packs it is not using, so main plus the
+console's own language is a complete install.)
+
+`Z:\version_235.txt` must be a copy of `install.txt`, not of whatever was
+copied last; ours was a 3.9 MB copy of `Title_Load.xmv`.
+
+### The video paces on the D3D swap count
+
+With all that, `Valve_Leader.xmv` is opened and read whole -- and the picture
+was still black. `sub_00039313`, the frame pump, ran 39,878 times and reached
+the converter **once**.
+
+The reason is `sub_00027060`, which is D3D's present statistics:
+
+```
+mov eax, [0x34048]            ; the device pointer
+mov edx, [eax + 0x1de8]       ; completed swaps
+mov [ecx + 4], edx
+```
+
+The player subtracts the value it saw when playback began and presents a frame
+only once that difference has passed the frame's own timestamp. `[device+0x1DE8]`
+was zero and stayed zero, so the first frame converted, set its done flag at
+`[esi+0xE8]`, and every frame after it was judged too early. D3D only increments
+that counter when a GPU-supplied parity matches (`0x000257A6`), which nothing
+here supplies. `xbox_Nv2aFrameCounter(0x00034048, 0x1DE8)` advances it at 62 Hz.
+
+Note the dereference: the device is at `[0x00034048]` = `0x00034050`, so the
+counter is at `0x00035E38`. Pointed at `0x00034048` directly it lands on
+`0x00035E30`, a neighbouring field, where the increment fights whatever owns it
+and the value flips between 0 and 1 -- which is what that looks like when you
+peek it.
+
+### Where it is now
+
+The loader plays the Valve logo. The frames fade up from black through the
+sequence and the picture is recognisable:
+
+![the loader's intro](images/loader_intro.png)
+
+Two things are not right yet. Playback stalls after the fade-in -- the frame
+counter advances but the stream stops progressing a second or so in, so the
+last frame is held. And the picture is blocky in a way the source is not, which
+is what a partially-decoded frame looks like: the executor runs from a watchdog
+tick rather than in step with the title, so a dumped frame can be sampled part
+way through its own update.
