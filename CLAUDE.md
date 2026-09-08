@@ -33,7 +33,7 @@ Source's macro-heavy design bakes names into the shipping binary. Measured in
 
 Two tools mine this today, both with self-checks:
 
-- **`tools/rtti.py`** — RTTI is left on in this build, so 2,932 vtables and
+- **`tools/rtti_check.py`** — RTTI is left on in this build, so 2,932 vtables and
   12,288 virtual methods come out with class names and a complete inheritance
   graph. 8,992 of those methods appear in exactly one class's vtable and are
   uniquely attributable.
@@ -136,7 +136,7 @@ containers, vtables everywhere. The other targets are mostly C.
 total_instructions   2,044,958
 total_functions         49,498      (.text 48,559)
   by call target        16,959
-  seed_vtable_thunk     12,300      <- from tools/rtti.py
+  seed_vtable_thunk     12,300      <- from tools/rtti_check.py
   by cc boundary         7,367
   by prologue            5,596
   tail jump alias        5,134      <- blocks a branch leaves a function for
@@ -192,7 +192,7 @@ Based on [xboxrecomp](https://github.com/sp00nznet/xboxrecomp).
 
 ### Key Directories
 - `game/` — extracted disc contents (git-ignored) and `hl2_analysis.json`
-- `tools/` — HL2-specific analysis (`rtti.py`, `datamaps.py`, `xcmp.py`,
+- `tools/` — HL2-specific analysis (`rtti_check.py`, `datamaps.py`, `xcmp.py`,
   `xzp_verify.py`, `install_hdd.sh`)
 - `build/` — pipeline output and CMake build tree (git-ignored)
 - `ref/` — reference source checkouts, clone yourself (git-ignored)
@@ -203,7 +203,7 @@ Based on [xboxrecomp](https://github.com/sp00nznet/xboxrecomp).
 ```bash
 ./regen.sh --disasm     # full pipeline: rtti -> seeded disasm -> recomp
 ./regen.sh              # skip disasm, re-run datamaps/func_id/recomp
-py -3 tools/rtti.py --self-check
+py -3 tools/rtti_check.py --self-check
 py -3 tools/datamaps.py --self-check
 py -3 tools/xcmp.py --self-check         # .xz_ container framing
 py -3 tools/xzp_verify.py --self-check   # decompressed .xzp integrity
