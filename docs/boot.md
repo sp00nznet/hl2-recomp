@@ -936,3 +936,69 @@ partition and TDATA/UDATA probing every title does at startup.
 So the loader is further along than the "spins on a null pointer" note above
 described -- it runs, clears and lays out text -- and it is still short of
 loading a font or a logo.
+
+
+## The loader starts playing the intro
+
+Screens one to four belong to the loader, and it had never run its own UI --
+`src/loader/main.c` bypassed the attract loop to call the install directly,
+because the loop spun on a null pointer. Rebuilt against the kernel fixes the
+USB work produced, it does not spin any more, and the difference is large.
+
+**It loads its media.** Before, a run made eighteen reads and never opened
+anything under `LoaderMedia`. Now `loader.xpr` opens and reads all 23,756,800
+bytes of it -- header `XPR0` -- `install.txt` parses, and all three videos open.
+
+**It stopped spinning.** 385 million indirect calls in 25 seconds became about
+2,000 in 40. That is not a faster spin, it is a wait: the loader had reached
+something and was sitting on it.
+
+**What it was sitting on was vblank.** `kernel_bridge.c` has said so for a
+while without anyone acting on it -- the D3D8 library linked into a title
+installs an ISR for the GPU's vertical blank and then waits on it, and nothing
+ever raised it. Both binaries connect that handler on vector 3: `0x0002F300` in
+the loader, `0x00617B60` in the game. Vector 1 is USB.
+
+Raising it needs two things beyond calling the routine. The status registers
+have to say vblank first, because the handler reads them to decide whether the
+interrupt is its business -- `PCRTC_INTR_0` bit 0 for the blank itself and
+`PMC_INTR_0` bit 24 to name PCRTC as the source -- and without them the handler
+looks, finds nothing, and correctly declines. And it has to run on a thread with
+a guest stack and a TIB, which the timer thread now has.
+
+With that in place the handler claims it, and the loader gets on with its job:
+
+```
+[PATH] \Device\CdRom0\LoaderMedia\Valve_Leader.xmv
+[FILE] -> 0x00000000
+[HEAP] #3: size=1736752 align=4096 -> 0x01081000..0x01229030
+[NV2A] vblank -> ISR claimed it
+[READ] @0 want=1736704 got=1736704 st=0x00000000  00 D0 00 00
+```
+
+The Valve logo is read into memory in full, and `KeInsertQueueDpc` and
+`KeSetEvent` climb steadily afterwards -- 79, 157, 237 deferred calls -- which
+is a decoder running frames and signalling them.
+
+### Where it stops
+
+Nothing reaches the framebuffer. `DMA_PUT` and `DMA_GET` sit at `0x1BB0`, the
+executor reports zero draws, and the dumped surface is one colour. So the video
+decodes and the frame loop turns, and the step between a decoded frame and the
+screen is missing.
+
+The loader links its own `XMV` section, so the decoding is the title's, not this
+runtime's -- `src/video/video_pump.c` is not involved and shows no activity.
+That makes the next question narrow: what does the loader do with a decoded
+frame? It either blits through a D3D8 call that needs bridging or writes to a
+surface whose address nothing here has followed. `RECOMP_USB` is unrelated;
+`RECOMP_VBLANK` is what turns this on.
+
+### The install marker, separately
+
+The loader reinstalls on every run because `Z:\version_235.txt` is missing --
+`install.txt` copies itself there first as the completion marker, and
+`tools/install_hdd.sh` never created it. Copying it makes the loader find it and
+then look for `Z:\version_235.txt.mrk`, a per-file marker whose format is not
+known here, so the install still runs. Not on the path to the intro, but it is
+why a run spends its time reading archives.
