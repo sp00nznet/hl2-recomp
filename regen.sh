@@ -32,7 +32,7 @@
 set -uo pipefail
 
 HL2="$(cd "$(dirname "$0")" && pwd)"
-RECOMP="$HL2/../xboxrecomp"
+RECOMP="${RECOMP:-$HL2/../xboxrecomp}"
 XBE="$HL2/game/hl2_xbox.xbe"
 
 if [[ ! -f "$XBE" ]]; then

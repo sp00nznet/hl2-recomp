@@ -36,6 +36,15 @@ controller yet. The intro logos before it are the loader's, and the loader is
 recompiled here but has never been run for its UI — see
 [docs/boot.md](docs/boot.md) for the sequence and where each screen lives.
 
+**Rebuilt on xboxrecomp v0.14.0 (2026-10-16)** it gets further: the title
+screen draws in full — logo, a pulsing "Press START", the copyright lines —
+with 0 faults and 0 unresolved indirect calls in a 90 s run. That needs
+[xboxrecomp#224](https://github.com/sp00nznet/xboxrecomp/pull/224) on top of
+v0.14.0; without it the C does not compile, and with only the compile fix the
+boot crashes before its first frame.
+
+![Half-Life 2 (Xbox) recompiled, at its title screen](docs/images/title-screen.png)
+
 ![Half-Life 2 (Xbox) recompiled, at its own main menu](docs/images/main-menu.png)
 
 *`./bin/hl2.exe` with no arguments. 640x480, captured out of the surface the
